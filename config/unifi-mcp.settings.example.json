@@ -1,0 +1,48 @@
+{
+  "$schema": "https://example.invalid/unifi-mcp.settings.schema.json",
+  "tokenRefreshSkew": "00:02:00",
+  "server": {
+    "name": "unifi-mcp",
+    "version": "0.1.0",
+    "protocolVersion": "2024-11-05",
+    "allowRawResponses": false,
+    "maxCollectionItems": 25,
+    "maxObjectProperties": 12,
+    "maxStringLength": 256
+  },
+  "credentials": [
+    {
+      "name": "site-manager-key",
+      "apiKeyEnvironmentVariable": "UNIFI_SITE_MANAGER_API_KEY",
+      "apiKeyHeaderName": "X-API-KEY"
+    },
+    {
+      "name": "network-key",
+      "apiKeyEnvironmentVariable": "UNIFI_NETWORK_API_KEY",
+      "apiKeyHeaderName": "X-API-KEY"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "site-manager",
+      "baseAddress": "https://api.ui.com",
+      "credential": "site-manager-key",
+      "scopeDescription": "UniFi Site Manager inventory and health reads.",
+      "sessionTtl": "00:55:00",
+      "allowedRelativePathPrefixes": [
+        "/v1"
+      ]
+    },
+    {
+      "name": "network",
+      "baseAddress": "https://controller.example.invalid",
+      "credential": "network-key",
+      "scopeDescription": "UniFi Network API reads for a controller or connector scope.",
+      "sessionTtl": "00:55:00",
+      "allowedRelativePathPrefixes": [
+        "/api",
+        "/proxy/network/api"
+      ]
+    }
+  ]
+}

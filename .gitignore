@@ -7,11 +7,22 @@ venv/
 dist/
 build/
 *.egg-info/
+bin/
+obj/
 
 # Environment & secrets
 .env
 .env.*
 !.env.example
+appsettings.*.local.json
+config/unifi-mcp.settings.json
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+secrets.json
+secrets.*.json
 
 # OS
 .DS_Store
@@ -21,6 +32,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.user
 
 # Logs
 *.log

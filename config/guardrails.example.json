@@ -1,0 +1,52 @@
+{
+  "$schema": "https://example.invalid/unifi-mcp.guardrails.schema.json",
+  "auth": {
+    "credentialSource": "environment",
+    "allowCredentialEcho": false
+  },
+  "tooling": {
+    "defaultResponseMode": "summary",
+    "allowRawResponses": false,
+    "defaultPageSize": 25,
+    "maxPageSize": 100,
+    "requireScopeFiltersForLargeQueries": true,
+    "mutationToolsEnabled": false
+  },
+  "redaction": {
+    "headers": [
+      "Authorization",
+      "Cookie",
+      "Set-Cookie",
+      "X-CSRF-Token",
+      "X-API-Key"
+    ],
+    "valueKeys": [
+      "token",
+      "accessToken",
+      "refreshToken",
+      "password",
+      "secret",
+      "clientSecret",
+      "privateKey",
+      "session",
+      "cookie"
+    ],
+    "maskIdentifiersByDefault": [
+      "ip",
+      "mac",
+      "serial",
+      "email",
+      "hostname"
+    ]
+  },
+  "logging": {
+    "logRequestBodies": false,
+    "logResponseBodies": false,
+    "logPromptPayloads": false
+  },
+  "leastPrivilege": {
+    "defaultRole": "read-only",
+    "smallestPracticalScope": true,
+    "separateWriteIdentity": true
+  }
+}

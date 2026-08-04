@@ -72,14 +72,11 @@ jobs:
 
           $rows = foreach ($name in $thresholds.projects.Keys | Sort-Object) {
             $package = $packages[$name]
-            if ($null -eq $package) {
-              throw "Coverage report does not contain source assembly '$name'."
-            }
 
             [PSCustomObject]@{
               Name = $name
-              Line = [double]$package.'line-rate' * 100
-              Branch = [double]$package.'branch-rate' * 100
+              Line = if ($null -eq $package) { [double]0 } else { [double]$package.'line-rate' * 100 }
+              Branch = if ($null -eq $package) { [double]0 } else { [double]$package.'branch-rate' * 100 }
               LineFloor = [double]$thresholds.projects[$name].line
               BranchFloor = [double]$thresholds.projects[$name].branch
             }

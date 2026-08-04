@@ -196,7 +196,8 @@ dotnet-coverage collect --output artifacts/coverage/coverage.cobertura.xml `
 The configured per-assembly and overall line and branch floors are in
 [`config/coverage-thresholds.json`](config/coverage-thresholds.json). CI
 publishes both the Cobertura XML and an HTML report as the `coverage-reports`
-artifact.
+artifact. Assemblies that the smoke-test run never loads are reported as 0%
+and are still evaluated against their configured floors.
 
 ## Documentation
 

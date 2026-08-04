@@ -1,17 +1,24 @@
-# UniFi MCP architecture
+# Architecture
 
-## Design choices
+unifi-mcp is a policy-enforcing bridge between MCP clients and UniFi APIs.
+Both transports share the same authentication, scope, validation, redaction,
+and response-bounding code.
 
-- **.NET 8** for long-term support and secure hosting primitives.
-- **One core, two hosts** so stdio and HTTP stay behaviorally aligned.
-- **Named credentials + named scopes** so many UniFi access paths can reuse one auth definition without duplicating secrets.
+## Components
+
+| Project | Responsibility |
+| --- | --- |
+| `Unifi.Mcp.Client` | Authentication, TLS, URI construction, and scope enforcement |
+| `UnifiMcp.Core` | MCP tools, JSON-RPC, contracts, policy, and sanitization |
+| `UnifiMcp.Stdio` | Newline-delimited stdio transport and approval-token CLI |
+| `UnifiMcp.Http` | ASP.NET Core HTTP transport |
 
 ## Runtime flow
 
 1. A host resolves an explicit `--config` path, `UNIFI_MCP_CONFIG`, or a config file directly under the current working/application directory.
 2. `UnifiMcpConfigurationLoader` validates the shared runtime config.
 3. `UnifiMcpRuntime` converts named credentials/scopes into low-level UniFi access profiles.
-4. `UnifiMcpServer` exposes a small, summary-first MCP tool surface.
+4. `UnifiMcpServer` exposes concrete tools plus contract-driven generic tools.
 5. `McpJsonRpcHost` handles protocol framing and JSON-RPC for both hosts.
 6. Responses pass through shared sanitization before becoming model-visible.
 
@@ -22,7 +29,7 @@
 
 Both transports use the same `McpJsonRpcHost` and `UnifiMcpServer`.
 
-## Enforcement boundaries
+## Security boundaries
 
 - Each profile combines a fixed base address, service kind, relative-path allowlist, HTTP-method allowlist, and explicit mutation setting.
 - Non-GET MCP calls require scope-level mutation enablement plus a one-time HMAC approval token generated outside the MCP and bound to the exact request.
@@ -30,3 +37,10 @@ Both transports use the same `McpJsonRpcHost` and `UnifiMcpServer`.
 - Response bodies are streamed through a byte cap before centralized JSON sanitization.
 - Sanitization removes secrets and common device/network identifiers and enforces collection, property, string, aggregate-output, and recursion-depth budgets.
 - A configured SHA-256 certificate pin is always compared exactly; no TLS bypass is available.
+
+## Why named credentials and scopes?
+
+Credentials name an environment-variable source. Scopes independently define
+the service, base address, allowed paths, allowed methods, mutation policy,
+and optional TLS pin. This supports any number of UniFi access paths without
+copying secret values into configuration.

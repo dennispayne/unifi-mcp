@@ -1,59 +1,104 @@
-# Security guardrails for UniFi MCP usage
+# Security
 
-This repository is intended to expose UniFi data through an MCP server without sending unnecessary sensitive information to the model.
+unifi-mcp is a policy-enforcing proxy between an MCP client and UniFi APIs.
+Its defaults are designed to limit credential exposure, constrain reachable
+API operations, and minimize infrastructure data sent to the model.
 
-## Core principles
+## Supported versions
 
-1. **Secrets stay server-side.** UniFi credentials, session cookies, bearer tokens, API tokens, CSRF values, and controller certificates must never be returned in tool output or written to logs.
-2. **Summary first.** The model should receive the smallest useful answer first: counts, health summaries, status changes, and explicitly requested fields.
-3. **Least privilege by default.** Use the smallest practical UniFi role and scope. Prefer separate read-only and mutation-capable identities/scopes.
-4. **Transports stay thin.** Put policy, sanitization, and auth boundaries in shared core code so stdio and HTTP behave consistently.
+Security fixes are provided for the latest published release. Upgrade before
+reporting an issue that is already resolved on `master`.
 
-## Safe secret handling
+## Credential boundary
 
-- Supply secrets through environment variables inherited by the MCP process; do not place them in configuration or source control.
-- Never pass secrets in command-line arguments; process command lines are observable by other local tooling.
-- Use the operating system or MCP host's secret facility to populate those variables before launch.
-- Prefer named `credentials` reused across many `scopes`.
-- Do not place real secrets in examples, fixtures, screenshots, or documentation.
-- Redact sensitive request and response material before logging or returning it:
-  - `Authorization`
-  - `Cookie` / `Set-Cookie`
-  - CSRF headers/tokens
-  - passwords
-  - API keys or bearer tokens
-  - private keys, client secrets, session identifiers
-- Log request IDs, endpoint names, counts, and durations instead of raw headers or bodies.
+UniFi API keys, the mutation approval key, and the optional HTTP bearer token
+are read from environment variables inherited by the MCP process.
 
-## Minimize model-visible sensitive data
+- Store only environment-variable **names** in configuration.
+- Populate values through the operating system, service manager, container
+  platform, or MCP host immediately before launch.
+- Never place secret values in JSON, source control, screenshots, prompts,
+  logs, or command-line arguments.
+- Give the MCP process only the variables it needs. Do not export credentials
+  broadly into unrelated shells or desktop sessions.
+- Treat any process running under the same operating-system identity as part
+  of the trust boundary; sufficiently privileged local processes may inspect
+  process memory or inherited environment data.
+- Rotate a credential immediately if it appears in model context, terminal
+  history, logs, crash dumps, or a committed file.
 
-- Prefer allowlisted fields over full payload passthrough.
-- Mask or omit identifiers that are often unnecessary for reasoning, such as:
-  - internal IP addresses
-  - MAC addresses
-  - serial numbers
-  - user emails or names
-  - site names or controller hostnames when not needed
-- Never expose full configuration exports, packet captures, or raw audit/event dumps unless a human explicitly chooses a higher-risk path outside normal model-facing flows.
+Environment variables are a handoff mechanism, not a secret store. Operators
+remain free to source them from their preferred secret manager without
+unifi-mcp depending on a particular vault product.
 
-## HTTP transport guardrails
+## Least privilege
 
-- Bind to loopback unless you have a deliberate remote deployment plan.
-- The host refuses non-loopback bindings unless `UNIFI_MCP_HTTP_AUTH_TOKEN` is set.
-- Set `UNIFI_MCP_HTTP_ALLOWED_ORIGINS` for trusted non-loopback browser origins; unexpected origins are rejected.
-- Keep `/healthz` minimal and non-sensitive.
-- Prefer HTTPS behind a trusted local reverse proxy for any remote deployment.
+- Create separate UniFi credentials for unrelated trust domains.
+- Prefer read-only credentials for inventory and monitoring.
+- Use separate, narrowly permissioned credentials and scopes for mutations.
+- Keep allowed path prefixes and HTTP methods as narrow as practical.
+- Disable Site Manager connector forwarding unless it is required; when
+  enabled, restrict it to explicit connector path prefixes.
 
-## Mutation and TLS boundaries
+## Mutation approvals
 
-- Scopes explicitly configure allowed HTTP methods and whether mutations are enabled.
-- Every POST, PUT, PATCH, or DELETE tool call must include a short-lived, one-time approval token bound to the exact scope, method, path, and body; GET remains the safe default.
-- Site Manager connector forwarding is disabled by default and restricted to explicitly configured connector path prefixes.
-- Prefer separate write-enabled scopes with narrowly permissioned API keys rather than granting mutation rights to broad inventory scopes.
-- API paths must remain within the profile allowlist; absolute URLs, traversal, encoded separators, backslashes, and path parameters are rejected.
-- Never disable certificate validation. Trust the controller certificate in Windows or configure its exact `pinnedServerCertificateSha256` fingerprint.
-- Automated and live validation must use inventory, status, statistics, and metadata GET endpoints only. Mutation behavior is tested with mock transports.
+POST, PUT, PATCH, and DELETE require all normal scope checks plus a one-time
+HMAC approval token.
 
-## Immediate implementation expectation
+- Use a random, high-entropy approval key that is different from every UniFi
+  API key and HTTP bearer token.
+- The token is bound to the exact scope, method, path, serialized body, and
+  expiration.
+- Tokens are short-lived and rejected after first use.
+- Generate tokens outside the model conversation with the packaged stdio
+  executable's `--create-mutation-approval` mode.
+- Never send the approval key itself to an MCP client or model.
 
-Treat the MCP server as a **policy-enforcing proxy** between the model and UniFi APIs. UniFi responses are bounded, redacted, and reduced before becoming model-visible output.
+Live project validation uses GET requests only. Mutation behavior is tested
+against mock transports.
+
+## Model-visible data
+
+All upstream responses pass through centralized size limits and sanitization
+before they become tool output.
+
+- Credentials and authentication headers are removed.
+- Common IP addresses, MAC addresses, serial numbers, email addresses, and
+  host identifiers are redacted.
+- Collection size, object properties, string length, JSON depth, response
+  bytes, and aggregate output characters are bounded.
+- Raw response summaries remain disabled unless explicitly enabled.
+
+No sanitizer can determine every organization's sensitivity requirements.
+Use narrow UniFi permissions and avoid requesting broad exports, packet
+captures, or audit dumps through a model-facing workflow.
+
+## Transport security
+
+### Stdio
+
+Run the stdio host as a dedicated, least-privileged user where practical.
+Standard output is reserved for MCP protocol messages; operational failures
+are written to standard error without credential values.
+
+### HTTP
+
+- HTTP binds to loopback by default.
+- Non-loopback binding requires a bearer token.
+- Browser origins must be loopback or explicitly allowlisted.
+- Request bodies and accepted content types are constrained.
+- Use HTTPS through a trusted reverse proxy for remote access.
+
+## TLS
+
+Certificate validation cannot be disabled. For private or self-signed
+controllers, install the issuing certificate in the operating-system trust
+store or configure the exact SHA-256 server-certificate pin. Rotate the pin
+when the controller certificate changes.
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through
+[GitHub Security Advisories](https://github.com/dennispayne/unifi-mcp/security/advisories/new).
+Do not include real API keys, controller exports, or identifying network data
+in public issues.

@@ -1,75 +1,81 @@
-# unifi-mcp
+<p align="center">
+  <img src="assets/unifi-mcp.svg" alt="unifi-mcp: secure, complete UniFi control through Model Context Protocol" width="100%">
+</p>
 
-Security-first UniFi Model Context Protocol (MCP) server targeting .NET 8 and developed with the .NET 10 / Visual Studio 2026 toolchain.
+<p align="center">
+  <a href="https://github.com/dennispayne/unifi-mcp/actions/workflows/dotnet.yml"><img src="https://github.com/dennispayne/unifi-mcp/actions/workflows/dotnet.yml/badge.svg" alt=".NET build"></a>
+  <a href="https://github.com/dennispayne/unifi-mcp/security/code-scanning"><img src="https://img.shields.io/badge/CodeQL-enabled-2563eb" alt="CodeQL enabled"></a>
+  <a href="https://github.com/dennispayne/unifi-mcp/releases"><img src="https://img.shields.io/github/v/release/dennispayne/unifi-mcp?display_name=tag" alt="GitHub release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dennispayne/unifi-mcp" alt="MIT license"></a>
+</p>
 
-## Architecture
+**unifi-mcp** connects MCP-compatible AI clients to UniFi Site Manager and
+UniFi Network through a security-focused, scope-aware proxy. It supports
+read-only workflows and explicitly approved mutations without exposing API
+keys to the model.
 
-- One shared configuration model with reusable named credentials and N named API scopes.
-- Separate stdio and HTTP hosts over the same policy, tool, and sanitization core.
-- Summary-first, bounded responses to minimize token use and model-visible data.
-- A reusable UniFi API client with API-key and legacy session authentication.
+> This is an independent community project and is not affiliated with or
+> endorsed by Ubiquiti Inc.
 
-```text
-UnifiMcp.slnx
-src/
-  Unifi.Mcp.Client/  UniFi client, authentication, TLS, and scope enforcement
-  UnifiMcp.Core/     MCP JSON-RPC, configuration, sanitization, and tools
-  UnifiMcp.Stdio/    Newline-delimited stdio host
-  UnifiMcp.Http/     ASP.NET Core HTTP host
-tests/
-  Unifi.Mcp.Client.SmokeTests/
-```
+## Highlights
 
-See `docs/architecture.md` and `docs/IMPLEMENTATION_NOTES.md`.
+- **Complete documented API surface:** 87 operations across Site Manager and
+  UniFi Network.
+- **Any number of scopes:** connect multiple consoles, sites, or credentials
+  through one server.
+- **Two transports:** self-contained stdio and HTTP executables.
+- **Security by default:** path and method allowlists, strict TLS validation,
+  optional certificate pinning, bounded output, and identifier redaction.
+- **Safe mutations:** one-time HMAC approvals bound to the exact scope,
+  method, path, request body, and expiration.
+- **Efficient MCP output:** concise summaries and hard response budgets reduce
+  unnecessary model context and token spend.
 
-## Installation
+## Install
 
-Download the archive for your platform from the GitHub Release:
+Download the archive for your platform from
+[GitHub Releases](https://github.com/dennispayne/unifi-mcp/releases):
 
-- `win-x64` or `win-arm64` (`.zip`)
-- `linux-x64` or `linux-arm64`
-- `osx-x64` or `osx-arm64`
+| Platform | Archive |
+| --- | --- |
+| Windows x64 / ARM64 | `.zip` |
+| Linux x64 / ARM64 | `.tar.gz` |
+| macOS Intel / Apple silicon | `.tar.gz` |
 
-Verify it against `SHA256SUMS.txt`, extract it, copy
-`config\unifi-mcp.settings.example.json` to
-`config\unifi-mcp.settings.json`, and configure the referenced environment
-variables. Each archive contains self-contained `stdio` and `http` hosts; a
-separate .NET installation is not required.
+Verify the archive using `SHA256SUMS.txt`, then extract it. Each package
+contains self-contained `stdio` and `http` hosts; installing .NET is not
+required.
 
-## Configuration
+## Quick start
 
-1. Copy `config\unifi-mcp.settings.example.json` to `config\unifi-mcp.settings.json`.
-2. Set the environment variables referenced by its credential entries.
-3. Optionally set `UNIFI_MCP_CONFIG` to an explicit configuration path.
-
-The example expects `UNIFI_SITE_MANAGER_API_KEY` for Site Manager, `UNIFI_NETWORK_API_KEY`
-for Network, and `UNIFI_MCP_MUTATION_APPROVAL_KEY` for mutation approvals.
-Populate them through the MCP host or parent process environment. Do not paste
-values into chat, configuration files, or command arguments.
-
-The Network scope targets `https://unifi/proxy/network/integration`. For a private or self-signed console certificate, trust it in Windows or set `pinnedServerCertificateSha256` to its exact SHA-256 fingerprint. Never disable TLS validation.
-
-## Running
-
-### Stdio
+1. Copy `config/unifi-mcp.settings.example.json` to
+   `config/unifi-mcp.settings.json`.
+2. Adjust the example base addresses, scopes, allowed paths, and certificate
+   pin for your environment.
+3. Set the environment variables named by each credential entry.
+4. Launch the stdio executable with the configuration path.
 
 ```powershell
-dotnet build UnifiMcp.slnx --configuration Release
-.\src\UnifiMcp.Stdio\bin\Release\net8.0\UnifiMcp.Stdio.exe `
-  --config .\config\unifi-mcp.settings.json
+.\stdio\UnifiMcp.Stdio.exe --config .\config\unifi-mcp.settings.json
 ```
 
-If Copilot inherits `UNIFI_SITE_MANAGER_API_KEY` and `UNIFI_NETWORK_API_KEY`, add the packaged stdio executable under `mcpServers` in `%USERPROFILE%\.copilot\mcp-config.json`:
+The included example uses generic environment-variable names. A local
+configuration may use any names; only the MCP process must inherit matching
+values. Never store API keys in JSON configuration or command arguments.
+
+## GitHub Copilot CLI
+
+Add the packaged stdio host to `%USERPROFILE%\.copilot\mcp-config.json`:
 
 ```json
 {
   "mcpServers": {
     "unifi": {
       "type": "stdio",
-      "command": "C:\\Tools\\unifi-mcp-v1.0.0-win-x64\\stdio\\UnifiMcp.Stdio.exe",
+      "command": "C:\\Tools\\unifi-mcp\\stdio\\UnifiMcp.Stdio.exe",
       "args": [
         "--config",
-        "C:\\Tools\\unifi-mcp-v1.0.0-win-x64\\config\\unifi-mcp.settings.json"
+        "C:\\Tools\\unifi-mcp\\config\\unifi-mcp.settings.json"
       ],
       "tools": [
         "unifi.scopes.list",
@@ -95,47 +101,39 @@ If Copilot inherits `UNIFI_SITE_MANAGER_API_KEY` and `UNIFI_NETWORK_API_KEY`, ad
 }
 ```
 
-If the file already contains other servers, merge only the `"unifi"` member into its existing `mcpServers` object. Run `/mcp` after saving to inspect or restart the CLI to reload it.
+Restart the client or reload MCP servers after saving the file.
 
-### HTTP
+## Multiple credentials and scopes
 
-Set `UNIFI_MCP_HTTP_AUTH_TOKEN`, `UNIFI_MCP_HTTP_URLS`, and optionally
-`UNIFI_MCP_HTTP_ALLOWED_ORIGINS` in the inherited environment, then launch
-`UnifiMcp.Http` with `--config`.
+Configuration separates reusable credentials from access scopes:
 
-Endpoints are `POST /mcp` and `GET /healthz`. MCP requests require JSON content and an `Accept` header containing `application/json` or `*/*`. When an auth token is configured, send it as a Bearer authorization token. Authentication is mandatory for any non-loopback binding. Browser origins must be loopback or explicitly allowlisted.
+- A **credential** names an environment variable and API-key header.
+- A **scope** selects a credential, service, base address, path boundary,
+  allowed methods, mutation policy, and TLS settings.
 
-## Tools
+Add as many credentials and scopes as needed. Secret values never belong in
+the settings file.
 
-Discovery and constrained generic access:
+## Tools and API coverage
 
-- `unifi.scopes.list`
-- `unifi.scopes.get`
-- `unifi.scope.read`
+Concrete tools provide compact results for common inventory and health
+requests. Three generic tools expose the remaining official API surface:
+
 - `unifi.api.operations.list`
 - `unifi.api.operation.get`
 - `unifi.api.request`
 
-Site Manager:
+The embedded catalog includes 14 Site Manager v1.0.0 operations and 73
+Network v10.4.57 operations. See [API coverage](docs/api-coverage.md) for
+details.
 
-- `unifi.site_manager.hosts.list`
-- `unifi.site_manager.sites.list`
-- `unifi.site_manager.devices.list`
-- `unifi.site_manager.isp_metrics.get`
+## Mutations
 
-UniFi Network:
+Mutations are disabled unless a scope explicitly enables them and allows the
+requested HTTP method. Every POST, PUT, PATCH, or DELETE also requires a
+short-lived, one-time approval token.
 
-- `unifi.network.info.get`
-- `unifi.network.sites.list`
-- `unifi.network.devices.list`
-- `unifi.network.clients.list`
-- `unifi.network.networks.list`
-- `unifi.network.wifi.list`
-- `unifi.network.device.statistics.get`
-
-The embedded official operation catalog covers 14 Site Manager v1.0.0 operations and 73 Network v10.4.57 operations. `unifi.api.operation.get` returns the parameters, request-body schema, and referenced definitions for one operation. `unifi.api.request` supports GET, POST, PUT, PATCH, and DELETE, including the Site Manager connector.
-
-Each scope controls `allowMutations` and `allowedHttpMethods`. Site Manager connector forwarding is separately gated by `allowConnectorProxy` and `connectorAllowedPathPrefixes`, so wildcard connector operations cannot escape configured API families. Every non-GET call also requires a short-lived, one-time HMAC approval token bound to its exact scope, method, path, and body:
+Generate a token outside the running MCP process:
 
 ```powershell
 $token = .\stdio\UnifiMcp.Stdio.exe --create-mutation-approval `
@@ -145,38 +143,52 @@ $token = .\stdio\UnifiMcp.Stdio.exe --create-mutation-approval `
   --body-file mutation-body.json
 ```
 
-Pass the resulting value as `mutationApprovalToken` with the exact same path
-and body. The command reads `UNIFI_MCP_MUTATION_APPROVAL_KEY` from its
-environment and prints only the short-lived token.
+The command reads the mutation approval key from its environment and prints
+only the token. The eventual MCP call must use the exact same scope, method,
+path, and JSON body.
 
-Tools enforce path and method allowlists, cap request and response bodies, and return bounded, redacted output. Raw response summaries remain disabled unless `allowRawResponses` is explicitly enabled. Prefer the concrete tools for common reads and use the generic executor for the remaining official API surface.
+## HTTP transport
 
-## Security posture
+Set these inherited environment variables as needed:
 
-- Configuration references environment variables rather than embedding credentials.
-- Output redacts credentials and common network/device identifiers.
-- Item, property, string, aggregate-character, response-body, stdio-message, and JSON-depth limits bound exposure and token usage.
-- Absolute URLs, traversal, ambiguous encodings, and paths outside each scope are rejected before authentication.
-- Mutations require both scope-level enablement and a one-time request-bound approval token.
-- Reserved authentication headers cannot be supplied by tool callers.
-- HTTP defaults to loopback, validates origins, caps requests, and requires authentication for remote bindings.
-- TLS validation is always active, including exact pin comparison when configured.
+| Variable | Purpose |
+| --- | --- |
+| `UNIFI_MCP_HTTP_URLS` | Listener URLs; defaults to loopback |
+| `UNIFI_MCP_HTTP_AUTH_TOKEN` | Required for non-loopback binding |
+| `UNIFI_MCP_HTTP_ALLOWED_ORIGINS` | Semicolon-separated browser origin allowlist |
 
-See `SECURITY.md` for deployment and usage guardrails.
+Launch `UnifiMcp.Http` with `--config`. The MCP endpoint is `POST /mcp`; health
+checks use `GET /healthz`.
 
-## Validation
+## Security
+
+unifi-mcp validates official operations before network access, rejects path
+escape attempts and reserved authentication headers, caps request and response
+sizes, redacts common infrastructure identifiers, and never offers a TLS
+validation bypass.
+
+Read [SECURITY.md](SECURITY.md) before enabling mutations or remote HTTP
+access.
+
+## Build from source
+
+Requirements: .NET SDK 10.0.302 or a compatible feature-band SDK selected by
+`global.json`.
 
 ```powershell
 dotnet build UnifiMcp.slnx --configuration Release
-dotnet run --project tests\Unifi.Mcp.Client.SmokeTests\Unifi.Mcp.Client.SmokeTests.csproj --configuration Release
+dotnet run `
+  --project tests\Unifi.Mcp.Client.SmokeTests\Unifi.Mcp.Client.SmokeTests.csproj `
+  --configuration Release `
+  --no-build
 ```
 
-## Creating a release
+## Documentation
 
-Pushing an annotated `v1.0.0` tag validates the solution, builds self-contained
-archives for all supported platforms, generates checksums, and creates the
-GitHub Release.
+- [Architecture](docs/architecture.md)
+- [API coverage](docs/api-coverage.md)
+- [Security policy](SECURITY.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)

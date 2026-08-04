@@ -75,7 +75,8 @@ jobs:
             -o "$packageRoot/http" "-p:Version=$version" `
             -p:PublishSingleFile=true -p:PublishTrimmed=false `
             -p:DebugType=None -p:DebugSymbols=false
-          New-Item -ItemType Directory -Force "$packageRoot/config", "$packageRoot/docs" | Out-Null
+          New-Item -ItemType Directory -Force "$packageRoot/assets", "$packageRoot/config", "$packageRoot/docs" | Out-Null
+          Copy-Item assets/unifi-mcp.svg "$packageRoot/assets"
           Copy-Item config/*.example.json "$packageRoot/config"
           Copy-Item docs/* "$packageRoot/docs"
           Copy-Item README.md, SECURITY.md, LICENSE "$packageRoot"
@@ -104,7 +105,8 @@ jobs:
             -p:PublishSingleFile=true -p:PublishTrimmed=false \
             -p:DebugType=None -p:DebugSymbols=false
           chmod +x "${package_root}/stdio/UnifiMcp.Stdio" "${package_root}/http/UnifiMcp.Http"
-          mkdir -p "${package_root}/config" "${package_root}/docs"
+          mkdir -p "${package_root}/assets" "${package_root}/config" "${package_root}/docs"
+          cp assets/unifi-mcp.svg "${package_root}/assets/"
           cp config/*.example.json "${package_root}/config/"
           cp docs/* "${package_root}/docs/"
           cp README.md SECURITY.md LICENSE "${package_root}/"

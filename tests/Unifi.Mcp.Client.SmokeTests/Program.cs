@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Unifi.Mcp.Client;
@@ -9,13 +10,38 @@ var tests = new (string Name, Func<Task> Run)[]
     ("uses api key credentials without login", UsesApiKeyCredentialsWithoutLoginAsync),
     ("reuses cached token per profile", ReusesCachedTokenPerProfileAsync),
     ("reauthenticates once on unauthorized", ReauthenticatesOnUnauthorizedAsync),
+    ("does not retry mutations on unauthorized", DoesNotRetryMutationsOnUnauthorizedAsync),
     ("rejects requests outside configured scope", RejectsRequestsOutsideScopeAsync),
+    ("rejects ambiguous and traversal paths", RejectsAmbiguousPathsAsync),
+    ("preserves controller base paths", PreservesControllerBasePathsAsync),
+    ("rejects non-GET requests", RejectsNonGetRequestsAsync),
+    ("allows configured mutation methods", AllowsConfiguredMutationMethodsAsync),
     ("keeps authentication errors secret-safe", KeepsAuthenticationErrorsSecretSafeAsync),
     ("loads profile config from JSON", LoadsProfileConfigFromJsonAsync),
     ("supports initialize and tools list", SupportsInitializeAndToolsListAsync),
+    ("lists full official API catalog", ListsFullOfficialApiCatalogAsync),
+    ("retrieves official operation schemas", RetrievesOfficialOperationSchemasAsync),
+    ("rejects undocumented API operations", RejectsUndocumentedApiOperationsAsync),
+    ("prefers literal API operation paths", PrefersLiteralApiOperationPathsAsync),
+    ("requires explicit connector proxy enablement", RequiresExplicitConnectorProxyEnablementAsync),
+    ("restricts connector proxy targets", RestrictsConnectorProxyTargetsAsync),
+    ("requires mutation confirmation", RequiresMutationConfirmationAsync),
+    ("enforces official request body requirements", EnforcesOfficialRequestBodyRequirementsAsync),
+    ("executes confirmed mutation requests", ExecutesConfirmedMutationRequestsAsync),
+    ("bounds mutation request bodies", BoundsMutationRequestBodiesAsync),
     ("ignores initialized notifications", IgnoresInitializedNotificationAsync),
+    ("ignores request-method notifications", IgnoresRequestMethodNotificationsAsync),
+    ("returns null IDs on JSON-RPC errors", ReturnsNullIdsOnJsonRpcErrorsAsync),
+    ("distinguishes null IDs from notifications", DistinguishesNullIdsFromNotificationsAsync),
+    ("rejects structurally invalid JSON-RPC", RejectsStructurallyInvalidJsonRpcAsync),
     ("returns tool failures as tool results", ReturnsToolFailuresAsToolResultsAsync),
-    ("reads and writes stdio frames", ReadsAndWritesFramesAsync)
+    ("reads and writes newline stdio messages", ReadsAndWritesMessagesAsync),
+    ("rejects oversized stdio messages", RejectsOversizedStdioMessagesAsync),
+    ("continues after oversized stdio messages", ContinuesAfterOversizedStdioMessagesAsync),
+    ("executes concrete Site Manager reads", ExecutesConcreteSiteManagerReadAsync),
+    ("bounds numeric sanitizer output", BoundsNumericSanitizerOutputAsync),
+    ("enforces concrete tool service type", EnforcesConcreteToolServiceTypeAsync),
+    ("rejects oversized upstream responses", RejectsOversizedUpstreamResponsesAsync)
 };
 
 foreach (var (name, run) in tests)
@@ -158,6 +184,30 @@ static async Task ReauthenticatesOnUnauthorizedAsync()
     Ensure(scriptedTransport.CapturedCookies.Last().Contains("SESSION=second", StringComparison.Ordinal), "Expected retry to use the refreshed session.");
 }
 
+static async Task DoesNotRetryMutationsOnUnauthorizedAsync()
+{
+    var transport = new ScriptedTransport(request =>
+        request.Method == HttpMethod.Post
+            ? Responses.Status(HttpStatusCode.Unauthorized, request)
+            : throw new InvalidOperationException("Unexpected request."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "POST"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    using var client = factory.Create("network");
+
+    await AssertThrowsAsync<UniFiClientException>(() =>
+        client.SendAsync(UniFiApiRequest.FromJson(HttpMethod.Post, "/v1/sites/site/devices", new { macAddress = "test" })))
+        .ConfigureAwait(false);
+    Ensure(transport.ApiRequestCount == 1, "Mutations must not be retried automatically after an unauthorized response.");
+}
+
 static async Task RejectsRequestsOutsideScopeAsync()
 {
     var transport = new ScriptedTransport(_ => Responses.Login("SESSION=alpha"));
@@ -176,6 +226,79 @@ static async Task RejectsRequestsOutsideScopeAsync()
 
     Ensure(exception.Message.Contains("outside the configured scope", StringComparison.OrdinalIgnoreCase), "Expected a scope rejection message.");
     Ensure(transport.LoginRequestCount == 0, "Out-of-scope requests should be rejected before authentication.");
+}
+
+static async Task RejectsAmbiguousPathsAsync()
+{
+    var profile = CreateProfile("network", "https://unifi/proxy/network/integration", "/v1");
+    var paths = new[]
+    {
+        "/v1/%2e%2e/admin",
+        "/v1%2fadmin",
+        "/v1%5cadmin",
+        "/v1\\admin",
+        "/v1;admin",
+        "/v1/../admin"
+    };
+
+    foreach (var path in paths)
+    {
+        await AssertThrowsAsync<UniFiClientException>(() =>
+        {
+            _ = UniFiPathScopeGuard.EnsureAllowed(profile, path);
+            return Task.CompletedTask;
+        }).ConfigureAwait(false);
+    }
+}
+
+static Task PreservesControllerBasePathsAsync()
+{
+    var profile = CreateProfile("network", "https://unifi/proxy/network/integration", "/v1");
+    var requestPath = UniFiPathScopeGuard.EnsureAllowed(profile, "/v1/info?limit=1");
+    var resolved = new Uri(new Uri("https://unifi/proxy/network/integration/"), requestPath);
+
+    Ensure(
+        resolved.PathAndQuery == "/proxy/network/integration/v1/info?limit=1",
+        $"Expected the controller base path to be preserved, got '{resolved.PathAndQuery}'.");
+    return Task.CompletedTask;
+}
+
+static async Task RejectsNonGetRequestsAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile("network", "https://unifi/proxy/network/integration", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport });
+    using var client = factory.Create("network");
+
+    await AssertThrowsAsync<UniFiClientException>(() =>
+        client.SendAsync(UniFiApiRequest.FromJson(HttpMethod.Post, "/v1/sites", new { name = "blocked" }))).ConfigureAwait(false);
+    Ensure(transport.ApiRequestCount == 0, "Non-GET requests must be rejected before transport.");
+}
+
+static async Task AllowsConfiguredMutationMethodsAsync()
+{
+    var transport = new ScriptedTransport(request =>
+    {
+        Ensure(request.Method == HttpMethod.Post, "Expected POST to reach the transport.");
+        return Responses.Json(request, """{"created":true}""");
+    });
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    using var client = factory.Create("network");
+
+    using var response = await client.SendAsync(
+        UniFiApiRequest.FromJson(HttpMethod.Post, "/v1/sites/site/devices", new { macAddress = "redacted-test" }))
+        .ConfigureAwait(false);
+    Ensure(response.StatusCode == HttpStatusCode.OK, "Configured POST should succeed.");
 }
 
 static async Task KeepsAuthenticationErrorsSecretSafeAsync()
@@ -259,7 +382,293 @@ static async Task SupportsInitializeAndToolsListAsync()
 
     using var toolsDocument = JsonDocument.Parse(toolsResponse!);
     var tools = toolsDocument.RootElement.GetProperty("result").GetProperty("tools");
-    Ensure(tools.GetArrayLength() == 3, $"Expected three tools, got {tools.GetArrayLength()}.");
+    Ensure(tools.GetArrayLength() == 17, $"Expected seventeen tools, got {tools.GetArrayLength()}.");
+}
+
+static async Task ListsFullOfficialApiCatalogAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"unifi.api.operations.list","arguments":{"limit":100}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
+    Ensure(structured.GetProperty("totalCount").GetInt32() == 87, "Expected all 87 official API operations.");
+    Ensure(structured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("mutating").GetBoolean()),
+        "Expected mutation operations in the official API catalog.");
+}
+
+static async Task RetrievesOfficialOperationSchemasAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"unifi.api.operation.get","arguments":{"service":"network","operationId":"createNetwork"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
+    Ensure(structured.GetProperty("method").GetString() == "POST", "Expected createNetwork POST schema.");
+    Ensure(structured.GetProperty("requestBody").ValueKind == JsonValueKind.Object, "Expected a request body schema.");
+    Ensure(structured.GetProperty("referencedSchemas").EnumerateObject().Any(), "Expected referenced schema definitions.");
+}
+
+static async Task RejectsUndocumentedApiOperationsAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"network","method":"GET","path":"/v1/undocumented"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Undocumented API operations must be rejected.");
+    Ensure(transport.ApiRequestCount == 0, "Undocumented operation must not reach transport.");
+}
+
+static async Task PrefersLiteralApiOperationPathsAsync()
+{
+    var transport = new ScriptedTransport(request =>
+        Responses.Json(request, """{"orderedIds":[]}"""));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"network","method":"GET","path":"/v1/sites/site/acl-rules/ordering"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(!document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Literal operation paths must take precedence over parameterized paths.");
+    Ensure(transport.ApiRequestCount == 1, "Resolved literal operation must reach transport once.");
+}
+
+static async Task RequiresExplicitConnectorProxyEnablementAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "site-manager",
+            "https://api.ui.com",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY",
+            service: UniFiServiceKind.SiteManager)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["site-manager"] = transport },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":37,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"site-manager","method":"GET","path":"/v1/connector/consoles/console/proxy/network/integration/v1/sites"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Connector proxy must require explicit scope enablement.");
+    Ensure(transport.ApiRequestCount == 0, "Disabled connector request must not reach transport.");
+}
+
+static async Task RestrictsConnectorProxyTargetsAsync()
+{
+    var transport = new ScriptedTransport(request =>
+        Responses.Json(request, """{"items":[]}"""));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "site-manager",
+            "https://api.ui.com",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY",
+            service: UniFiServiceKind.SiteManager,
+            allowConnectorProxy: true,
+            connectorAllowedPathPrefixes: ["/proxy/network/integration/v1"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["site-manager"] = transport },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+
+    var deniedResponse = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":38,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"site-manager","method":"GET","path":"/v1/connector/consoles/console/proxy/protect/integration/v1/cameras"}}}""")
+        .ConfigureAwait(false);
+    using (var deniedDocument = JsonDocument.Parse(deniedResponse!))
+    {
+        Ensure(deniedDocument.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+            "Connector proxy must reject targets outside configured prefixes.");
+    }
+
+    var allowedResponse = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":39,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"site-manager","method":"GET","path":"/v1/connector/consoles/console/proxy/network/integration/v1/sites"}}}""")
+        .ConfigureAwait(false);
+    using var allowedDocument = JsonDocument.Parse(allowedResponse!);
+    Ensure(!allowedDocument.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Connector proxy must allow explicitly configured targets.");
+    Ensure(transport.ApiRequestCount == 1, "Only the allowed connector request should reach transport.");
+}
+
+static async Task RequiresMutationConfirmationAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network,
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "POST"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"network","method":"POST","path":"/v1/sites/site/devices","body":{"macAddress":"test"}}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Mutation requests without confirmation must fail.");
+    Ensure(transport.ApiRequestCount == 0, "Unconfirmed mutation must not reach transport.");
+}
+
+static async Task EnforcesOfficialRequestBodyRequirementsAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network,
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "POST"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"network","method":"POST","path":"/v1/sites/site/networks","mutationApprovalToken":"invalid"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var text = document.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString();
+    Ensure(text?.Contains("requires a request body", StringComparison.Ordinal) == true,
+        "Required request bodies must be enforced from the official contract.");
+    Ensure(transport.ApiRequestCount == 0, "Body-invalid operation must not reach transport.");
+}
+
+static async Task ExecutesConfirmedMutationRequestsAsync()
+{
+    const string ApprovalKey = "test-mutation-approval-key";
+    const string Path = "/v1/sites/site/firewall/policies/policy";
+    const string BodyJson = """{"enabled":true}""";
+    Environment.SetEnvironmentVariable("UNIFI_MCP_MUTATION_APPROVAL_KEY", ApprovalKey, EnvironmentVariableTarget.Process);
+    var transport = new ScriptedTransport(request =>
+    {
+        Ensure(request.Method == HttpMethod.Patch, "Expected PATCH mutation.");
+        Ensure(RequestPathHelper.GetPath(request) == "/v1/sites/site/firewall/policies/policy", "Unexpected mutation path.");
+        var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+        Ensure(body.Contains("\"enabled\":true", StringComparison.Ordinal), "Expected JSON mutation body.");
+        return Responses.Json(request, """{"id":"policy","enabled":true}""");
+    });
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network,
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "PATCH"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var token = CreateMutationApprovalToken(ApprovalKey, "network", "PATCH", Path, Encoding.UTF8.GetBytes(BodyJson));
+    using var bodyDocument = JsonDocument.Parse(BodyJson);
+    var requestJson = JsonSerializer.Serialize(new
+    {
+        jsonrpc = "2.0",
+        id = 32,
+        method = "tools/call",
+        @params = new
+        {
+            name = "unifi.api.request",
+            arguments = new
+            {
+                scope = "network",
+                method = "PATCH",
+                path = Path,
+                body = bodyDocument.RootElement,
+                mutationApprovalToken = token
+            }
+        }
+    });
+    var response = await host.HandleJsonRpcAsync(requestJson)
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var result = document.RootElement.GetProperty("result");
+    Ensure(
+        !result.GetProperty("isError").GetBoolean(),
+        $"Confirmed configured mutation should succeed: {result.GetProperty("content")[0].GetProperty("text").GetString()}");
+    Ensure(result.GetProperty("structuredContent").GetProperty("method").GetString() == "PATCH",
+        "Mutation result should identify its method.");
+
+    var replayResponse = await host.HandleJsonRpcAsync(requestJson).ConfigureAwait(false);
+    using var replayDocument = JsonDocument.Parse(replayResponse!);
+    Ensure(replayDocument.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Mutation approval tokens must be one-time use.");
+    Ensure(transport.ApiRequestCount == 1, "Replayed mutation must not reach transport.");
+    Environment.SetEnvironmentVariable("UNIFI_MCP_MUTATION_APPROVAL_KEY", null, EnvironmentVariableTarget.Process);
+}
+
+static async Task BoundsMutationRequestBodiesAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "network",
+            "https://unifi/proxy/network/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY",
+            service: UniFiServiceKind.Network,
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "POST"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory, new UnifiMcpServerOptions { MaxRequestBodyBytes = 32 }));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"network","method":"POST","path":"/v1/sites/site/devices","body":{"value":"0123456789012345678901234567890123456789"},"mutationApprovalToken":"invalid"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Oversized mutation body must fail.");
+    Ensure(transport.ApiRequestCount == 0, "Oversized mutation body must not reach transport.");
 }
 
 static async Task IgnoresInitializedNotificationAsync()
@@ -274,6 +683,82 @@ static async Task IgnoresInitializedNotificationAsync()
     var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
     var response = await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""").ConfigureAwait(false);
     Ensure(response is null, "Initialized notifications should not produce a response.");
+}
+
+static async Task IgnoresRequestMethodNotificationsAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    Ensure(await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"unsupported"}}""").ConfigureAwait(false) is null,
+        "Initialize notifications must not produce responses.");
+    Ensure(await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","method":"tools/list"}""").ConfigureAwait(false) is null,
+        "tools/list notifications must not produce responses.");
+    Ensure(await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","method":"tools/call","params":{"name":"unifi.scopes.list"}}""").ConfigureAwait(false) is null,
+        "tools/call notifications must not produce responses.");
+}
+
+static async Task ReturnsNullIdsOnJsonRpcErrorsAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync("{").ConfigureAwait(false);
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Null,
+        "JSON-RPC parse errors must include a null id.");
+}
+
+static async Task DistinguishesNullIdsFromNotificationsAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var nullIdResponse = await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","id":null,"method":"ping"}""").ConfigureAwait(false);
+    using var nullIdDocument = JsonDocument.Parse(nullIdResponse!);
+    Ensure(nullIdDocument.RootElement.GetProperty("id").ValueKind == JsonValueKind.Null,
+        "An explicit null id is a request and must receive a response.");
+
+    var invalidIdResponse = await host.HandleJsonRpcAsync("""{"jsonrpc":"2.0","id":{},"method":"ping"}""").ConfigureAwait(false);
+    using var invalidIdDocument = JsonDocument.Parse(invalidIdResponse!);
+    Ensure(invalidIdDocument.RootElement.GetProperty("error").GetProperty("code").GetInt32() == -32600,
+        "Object-valued JSON-RPC ids must be rejected as invalid requests.");
+}
+
+static async Task RejectsStructurallyInvalidJsonRpcAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+
+    foreach (var payload in new[] { "null", """{"jsonrpc":"2.0","id":1}""", """{"jsonrpc":"1.0","method":"ping"}""" })
+    {
+        var response = await host.HandleJsonRpcAsync(payload).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(response!);
+        Ensure(document.RootElement.GetProperty("error").GetProperty("code").GetInt32() == -32600,
+            "Structurally invalid JSON-RPC must return Invalid Request.");
+        Ensure(document.RootElement.GetProperty("id").ValueKind == JsonValueKind.Null,
+            "Structurally invalid JSON-RPC must return a null id.");
+    }
 }
 
 static async Task ReturnsToolFailuresAsToolResultsAsync()
@@ -297,16 +782,162 @@ static async Task ReturnsToolFailuresAsToolResultsAsync()
     Ensure(result.GetProperty("isError").GetBoolean(), "Expected tool failure to be returned as an MCP tool error.");
 }
 
-static async Task ReadsAndWritesFramesAsync()
+static async Task ReadsAndWritesMessagesAsync()
 {
     await using var stream = new MemoryStream();
     const string Payload = """{"jsonrpc":"2.0","id":1}""";
 
-    await McpJsonRpcHost.WriteFrameAsync(stream, Payload).ConfigureAwait(false);
+    await McpJsonRpcHost.WriteMessageAsync(stream, Payload).ConfigureAwait(false);
     stream.Position = 0;
 
-    var roundTripped = await McpJsonRpcHost.ReadFrameAsync(stream).ConfigureAwait(false);
-    Ensure(roundTripped == Payload, "Expected stdio framing to round-trip unchanged.");
+    var roundTripped = await McpJsonRpcHost.ReadMessageAsync(stream, 1024).ConfigureAwait(false);
+    Ensure(roundTripped == Payload, "Expected newline-delimited stdio to round-trip unchanged.");
+}
+
+static async Task RejectsOversizedStdioMessagesAsync()
+{
+    await using var stream = new MemoryStream(Encoding.UTF8.GetBytes("12345\n"));
+    var exception = await AssertThrowsAsync<InvalidOperationException>(() =>
+        McpJsonRpcHost.ReadMessageAsync(stream, 4)).ConfigureAwait(false);
+    Ensure(exception.Message.Contains("exceeds", StringComparison.Ordinal), "Expected a bounded stdio error.");
+}
+
+static async Task ContinuesAfterOversizedStdioMessagesAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+    var server = new UnifiMcpServer(factory, new UnifiMcpServerOptions { MaxStdioMessageBytes = 64 });
+    var host = new McpJsonRpcHost(server);
+    var oversized = new string('x', 65);
+    await using var input = new MemoryStream(Encoding.UTF8.GetBytes(
+        oversized + "\n" + """{"jsonrpc":"2.0","id":7,"method":"ping"}""" + "\n"));
+    await using var output = new MemoryStream();
+
+    await host.HandleStdioAsync(input, output).ConfigureAwait(false);
+    var lines = Encoding.UTF8.GetString(output.ToArray()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    Ensure(lines.Length == 2, $"Expected an error and a ping response, got {lines.Length} messages.");
+    using var pingDocument = JsonDocument.Parse(lines[1]);
+    Ensure(pingDocument.RootElement.GetProperty("id").GetInt32() == 7, "Expected stdio processing to continue after an oversized message.");
+}
+
+static async Task ExecutesConcreteSiteManagerReadAsync()
+{
+    const string ApiKey = "test-api-key";
+    var transport = new ScriptedTransport(request =>
+    {
+        var path = RequestPathHelper.GetPath(request);
+        Ensure(request.Method == HttpMethod.Get, "Concrete tools must issue GET requests only.");
+        Ensure(path == "/v1/sites?pageSize=2", $"Unexpected Site Manager path '{path}'.");
+        return Responses.Json(request, """{"data":[{"siteId":"site-1","meta":{"name":"HQ","gatewayMac":"aa:bb","ipAddrs":["10.0.0.5"],"last_ip":"10.0.0.6","fixed_ip":"10.0.0.7","serialno":"ABC123"},"statistics":{"num_clients":3}}],"nextToken":"next"}""");
+    });
+
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "site-manager",
+            "https://api.ui.com",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY",
+            service: UniFiServiceKind.SiteManager)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-manager"] = transport
+        },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? ApiKey : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"unifi.site_manager.sites.list","arguments":{"scope":"site-manager","pageSize":2}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("meta").GetProperty("gatewayMac").GetString() == "[redacted]",
+        "Expected nested MAC identifiers to be redacted.");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("meta").GetProperty("ipAddrs").GetString() == "[redacted]",
+        "Expected UniFi IP address arrays to be redacted.");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("meta").GetProperty("last_ip").GetString() == "[redacted]",
+        "Expected last known UniFi IP fields to be redacted.");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("meta").GetProperty("fixed_ip").GetString() == "[redacted]",
+        "Expected fixed UniFi IP fields to be redacted.");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("meta").GetProperty("serialno").GetString() == "[redacted]",
+        "Expected abbreviated UniFi serial fields to be redacted.");
+}
+
+static async Task EnforcesConcreteToolServiceTypeAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("generic", "https://controller.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["generic"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"unifi.network.info.get","arguments":{"scope":"generic"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Expected a service mismatch tool error.");
+}
+
+static async Task BoundsNumericSanitizerOutputAsync()
+{
+    var payload = """{"number":""" + new string('9', 500) + "}";
+    var transport = new ScriptedTransport(request => Responses.Json(request, payload));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "site-manager",
+            "https://api.ui.com",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY",
+            service: UniFiServiceKind.SiteManager)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["site-manager"] = transport },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? "test-api-key" : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(
+        factory,
+        new UnifiMcpServerOptions { MaxSanitizedOutputCharacters = 64 }));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"unifi.site_manager.hosts.list","arguments":{"scope":"site-manager"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var sanitizedData = document.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("data");
+    Ensure(sanitizedData.GetRawText().Length <= 64, "Numeric values must not bypass the aggregate sanitizer output limit.");
+}
+
+static async Task RejectsOversizedUpstreamResponsesAsync()
+{
+    var transport = new ScriptedTransport(request => Responses.Json(request, """{"data":"0123456789"}"""));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "site-manager",
+            "https://api.ui.com",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY",
+            service: UniFiServiceKind.SiteManager)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-manager"] = transport
+        },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? "test-api-key" : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(
+        factory,
+        new UnifiMcpServerOptions { MaxUpstreamResponseBytes = 8 }));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"unifi.site_manager.hosts.list","arguments":{"scope":"site-manager"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Expected an oversized upstream response tool error.");
 }
 
 static UniFiApiClientFactory CreateFactory(
@@ -329,17 +960,27 @@ static UniFiAccessProfileOptions CreateProfile(
     string allowedPrefix,
     string password = "password",
     string? apiKeyEnvironmentVariable = null,
-    string apiKeyHeaderName = "X-API-KEY")
+    string apiKeyHeaderName = "X-API-KEY",
+    UniFiServiceKind service = UniFiServiceKind.Generic,
+    bool allowMutations = false,
+    IReadOnlyList<string>? allowedHttpMethods = null,
+    bool allowConnectorProxy = false,
+    IReadOnlyList<string>? connectorAllowedPathPrefixes = null)
 {
     return new UniFiAccessProfileOptions
     {
         Name = name,
         BaseAddress = new Uri(baseAddress),
+        Service = service,
         Username = apiKeyEnvironmentVariable is null ? "readonly" : null,
         Password = apiKeyEnvironmentVariable is null ? password : null,
         ApiKeyEnvironmentVariable = apiKeyEnvironmentVariable,
         ApiKeyHeaderName = apiKeyHeaderName,
-        AllowedRelativePathPrefixes = [allowedPrefix]
+        AllowedRelativePathPrefixes = [allowedPrefix],
+        AllowMutations = allowMutations,
+        AllowedHttpMethods = allowedHttpMethods ?? ["GET"],
+        AllowConnectorProxy = allowConnectorProxy,
+        ConnectorAllowedPathPrefixes = connectorAllowedPathPrefixes ?? []
     };
 }
 
@@ -350,12 +991,22 @@ static async Task<TException> AssertThrowsAsync<TException>(Func<Task> action)
     {
         await action().ConfigureAwait(false);
     }
+
     catch (TException exception)
     {
         return exception;
     }
 
     throw new InvalidOperationException($"Expected exception of type {typeof(TException).Name}.");
+}
+
+static string CreateMutationApprovalToken(string key, string scope, string method, string path, byte[] body)
+{
+    var expiresAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds();
+    var bodyHash = Convert.ToHexString(SHA256.HashData(body));
+    var message = $"{expiresAt}\n{scope}\n{method}\n{path}\n{bodyHash}";
+    var signature = HMACSHA256.HashData(Encoding.UTF8.GetBytes(key), Encoding.UTF8.GetBytes(message));
+    return $"{expiresAt}.{Convert.ToBase64String(signature)}";
 }
 
 static void Ensure(bool condition, string message)
@@ -442,7 +1093,9 @@ internal static class RequestPathHelper
             return string.Empty;
         }
 
-        return requestUri.IsAbsoluteUri ? requestUri.PathAndQuery : requestUri.OriginalString;
+        return requestUri.IsAbsoluteUri
+            ? requestUri.PathAndQuery
+            : "/" + requestUri.OriginalString.TrimStart('/');
     }
 }
 

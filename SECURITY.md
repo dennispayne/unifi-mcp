@@ -6,12 +6,16 @@ This repository is intended to expose UniFi data through an MCP server without s
 
 1. **Secrets stay server-side.** UniFi credentials, session cookies, bearer tokens, API tokens, CSRF values, and controller certificates must never be returned in tool output or written to logs.
 2. **Summary first.** The model should receive the smallest useful answer first: counts, health summaries, status changes, and explicitly requested fields.
-3. **Least privilege by default.** Use the smallest practical UniFi role and scope. Prefer dedicated read-only identities.
+3. **Least privilege by default.** Use the smallest practical UniFi role and scope. Prefer separate read-only and mutation-capable identities/scopes.
 4. **Transports stay thin.** Put policy, sanitization, and auth boundaries in shared core code so stdio and HTTP behave consistently.
 
 ## Safe secret handling
 
-- Store secrets in local environment variables or an OS secret store, not in source control.
+- Store secrets in an OS-backed PowerShell SecretManagement vault, not in source control or persistent environment variables.
+- Use `scripts\Start-UnifiMcp.ps1` so plaintext keys exist only in the launcher/MCP process environment and are removed at exit.
+- Never pass secrets in command-line arguments; process command lines are observable by other local tooling.
+- PowerShell SecretManagement is the primary provider. Windows Credential Manager is not used.
+- Password authentication is the default. `Initialize-UnifiMcpSecrets.ps1 -Unattended` is an explicit tradeoff for noninteractive MCP startup: local encryption remains, but the Windows user account becomes the only access boundary.
 - Prefer named `credentials` reused across many `scopes`.
 - Do not place real secrets in examples, fixtures, screenshots, or documentation.
 - Redact sensitive request and response material before logging or returning it:
@@ -37,9 +41,21 @@ This repository is intended to expose UniFi data through an MCP server without s
 ## HTTP transport guardrails
 
 - Bind to loopback unless you have a deliberate remote deployment plan.
-- If HTTP is exposed beyond loopback, require an authorization layer such as `UNIFI_MCP_HTTP_BEARER_TOKEN`.
-- Keep `/health` minimal and non-sensitive.
+- The host refuses non-loopback bindings unless `UNIFI_MCP_HTTP_AUTH_TOKEN` is set.
+- Set `UNIFI_MCP_HTTP_ALLOWED_ORIGINS` for trusted non-loopback browser origins; unexpected origins are rejected.
+- Keep `/healthz` minimal and non-sensitive.
+- Prefer HTTPS behind a trusted local reverse proxy for any remote deployment.
+
+## Mutation and TLS boundaries
+
+- Scopes explicitly configure allowed HTTP methods and whether mutations are enabled.
+- Every POST, PUT, PATCH, or DELETE tool call must include a short-lived, one-time approval token bound to the exact scope, method, path, and body; GET remains the safe default.
+- Site Manager connector forwarding is disabled by default and restricted to explicitly configured connector path prefixes.
+- Prefer separate write-enabled scopes with narrowly permissioned API keys rather than granting mutation rights to broad inventory scopes.
+- API paths must remain within the profile allowlist; absolute URLs, traversal, encoded separators, backslashes, and path parameters are rejected.
+- Never disable certificate validation. Trust the controller certificate in Windows or configure its exact `pinnedServerCertificateSha256` fingerprint.
+- Automated and live validation must use inventory, status, statistics, and metadata GET endpoints only. Mutation behavior is tested with mock transports.
 
 ## Immediate implementation expectation
 
-Treat the MCP server as a **policy-enforcing proxy** between the model and UniFi APIs. UniFi responses should be normalized, redacted, and reduced before becoming model-visible output.
+Treat the MCP server as a **policy-enforcing proxy** between the model and UniFi APIs. UniFi responses are bounded, redacted, and reduced before becoming model-visible output.

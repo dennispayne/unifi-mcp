@@ -22,7 +22,21 @@ public sealed class McpJsonRpcHost
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var requestText = await ReadFrameAsync(input, cancellationToken).ConfigureAwait(false);
+            string? requestText;
+            try
+            {
+                requestText = await ReadMessageAsync(input, _server.MaxStdioMessageBytes, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                var errorText = JsonSerializer.Serialize(
+                    new McpResponse("2.0", null, null, new McpError(-32600, "MCP stdio message exceeds the configured size limit.")),
+                    JsonOptions);
+                await WriteMessageAsync(output, errorText, cancellationToken).ConfigureAwait(false);
+                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             if (requestText is null)
             {
                 return;
@@ -34,7 +48,7 @@ public sealed class McpJsonRpcHost
                 continue;
             }
 
-            await WriteFrameAsync(output, responseText, cancellationToken).ConfigureAwait(false);
+            await WriteMessageAsync(output, responseText, cancellationToken).ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
     }
@@ -46,19 +60,31 @@ public sealed class McpJsonRpcHost
             using var document = JsonDocument.Parse(requestText);
             if (document.RootElement.ValueKind == JsonValueKind.Array)
             {
-                return JsonSerializer.Serialize(
-                    new McpResponse(
-                        "2.0",
-                        null,
-                        null,
-                        new McpError(-32600, "Batch JSON-RPC requests are not supported.")),
-                    JsonOptions);
+                return SerializeInvalidRequest("Batch JSON-RPC requests are not supported.");
+            }
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("jsonrpc", out var jsonRpcElement) ||
+                jsonRpcElement.ValueKind != JsonValueKind.String ||
+                !string.Equals(jsonRpcElement.GetString(), "2.0", StringComparison.Ordinal) ||
+                !document.RootElement.TryGetProperty("method", out var methodElement) ||
+                methodElement.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(methodElement.GetString()))
+            {
+                return SerializeInvalidRequest("A JSON-RPC 2.0 object with a method is required.");
             }
 
             var request = JsonSerializer.Deserialize<McpRequest>(document.RootElement, JsonOptions)
                 ?? throw new JsonException("Request could not be deserialized.");
+            var hasId = document.RootElement.TryGetProperty("id", out var idElement);
+            if (hasId && idElement.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null))
+            {
+                return JsonSerializer.Serialize(
+                    new McpResponse("2.0", null, null, new McpError(-32600, "JSON-RPC id must be a string, number, or null.")),
+                    JsonOptions);
+            }
 
-            var response = await _server.HandleAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await _server.HandleAsync(request with { HasId = hasId }, cancellationToken).ConfigureAwait(false);
             return response is null ? null : JsonSerializer.Serialize(response, JsonOptions);
         }
         catch (JsonException)
@@ -71,84 +97,95 @@ public sealed class McpJsonRpcHost
                     new McpError(-32700, "Invalid JSON-RPC payload.")),
                 JsonOptions);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return JsonSerializer.Serialize(
+                new McpResponse(
+                    "2.0",
+                    null,
+                    null,
+                    new McpError(-32603, "Internal error.")),
+                JsonOptions);
+        }
     }
 
-    public static async Task WriteFrameAsync(Stream output, string payload, CancellationToken cancellationToken = default)
+    private static string SerializeInvalidRequest(string message) =>
+        JsonSerializer.Serialize(
+            new McpResponse("2.0", null, null, new McpError(-32600, message)),
+            JsonOptions);
+
+    public static async Task WriteMessageAsync(Stream output, string payload, CancellationToken cancellationToken = default)
     {
+        if (payload.Contains('\n', StringComparison.Ordinal) || payload.Contains('\r', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("MCP stdio messages must not contain embedded newlines.");
+        }
+
         var bytes = Encoding.UTF8.GetBytes(payload);
-        var header = Encoding.ASCII.GetBytes($"Content-Length: {bytes.Length}\r\n\r\n");
-        await output.WriteAsync(header, cancellationToken).ConfigureAwait(false);
         await output.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        await output.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
-    public static async Task<string?> ReadFrameAsync(Stream input, CancellationToken cancellationToken = default)
+    public static async Task<string?> ReadMessageAsync(
+        Stream input,
+        int maxMessageBytes,
+        CancellationToken cancellationToken = default)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(1);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxMessageBytes);
+        var readBuffer = ArrayPool<byte>.Shared.Rent(4096);
+        var messageBuffer = new ArrayBufferWriter<byte>(Math.Min(maxMessageBytes, 4096));
+        var exceedsLimit = false;
+
         try
         {
-            var header = new StringBuilder();
-            var lastFour = new Queue<char>(4);
-
             while (true)
             {
-                var read = await input.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
+                var read = await input.ReadAsync(readBuffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    return null;
+                    if (exceedsLimit)
+                    {
+                        throw new InvalidOperationException($"MCP stdio message exceeds the {maxMessageBytes}-byte limit.");
+                    }
+
+                    return messageBuffer.WrittenCount == 0
+                        ? null
+                        : Encoding.UTF8.GetString(messageBuffer.WrittenSpan);
                 }
 
-                var current = (char)buffer[0];
-                header.Append(current);
-                lastFour.Enqueue(current);
-                if (lastFour.Count > 4)
+                if (readBuffer[0] == (byte)'\n')
                 {
-                    lastFour.Dequeue();
+                    if (exceedsLimit)
+                    {
+                        throw new InvalidOperationException($"MCP stdio message exceeds the {maxMessageBytes}-byte limit.");
+                    }
+
+                    var length = messageBuffer.WrittenCount;
+                    if (length > 0 && messageBuffer.WrittenMemory.Span[length - 1] == (byte)'\r')
+                    {
+                        length--;
+                    }
+
+                    return Encoding.UTF8.GetString(messageBuffer.WrittenMemory[..length].ToArray());
                 }
 
-                if (lastFour.Count == 4 && new string(lastFour.ToArray()) == "\r\n\r\n")
+                if (messageBuffer.WrittenCount >= maxMessageBytes)
                 {
-                    break;
+                    exceedsLimit = true;
+                    continue;
                 }
+
+                messageBuffer.GetSpan(1)[0] = readBuffer[0];
+                messageBuffer.Advance(1);
             }
-
-            var contentLength = ParseContentLength(header.ToString());
-            var payloadBuffer = new byte[contentLength];
-            var offset = 0;
-            while (offset < contentLength)
-            {
-                var read = await input.ReadAsync(payloadBuffer.AsMemory(offset, contentLength - offset), cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    throw new EndOfStreamException("Unexpected end of stream while reading MCP frame payload.");
-                }
-
-                offset += read;
-            }
-
-            return Encoding.UTF8.GetString(payloadBuffer);
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            ArrayPool<byte>.Shared.Return(readBuffer);
         }
-    }
-
-    private static int ParseContentLength(string header)
-    {
-        foreach (var line in header.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (!line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var value = line["Content-Length:".Length..].Trim();
-            if (int.TryParse(value, out var contentLength) && contentLength >= 0)
-            {
-                return contentLength;
-            }
-        }
-
-        throw new InvalidOperationException("MCP frame is missing a valid Content-Length header.");
     }
 }

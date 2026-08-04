@@ -8,6 +8,16 @@ public interface IUniFiApiClient : IDisposable
 
     string? ScopeDescription { get; }
 
+    UniFiServiceKind Service { get; }
+
+    bool AllowMutations { get; }
+
+    IReadOnlySet<string> AllowedHttpMethods { get; }
+
+    bool AllowConnectorProxy { get; }
+
+    IReadOnlyList<string> ConnectorAllowedPathPrefixes { get; }
+
     Task<HttpResponseMessage> SendAsync(UniFiApiRequest request, CancellationToken cancellationToken = default);
 
     async Task<T?> GetFromJsonAsync<T>(string relativePath, CancellationToken cancellationToken = default)

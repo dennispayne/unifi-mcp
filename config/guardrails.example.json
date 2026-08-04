@@ -10,7 +10,8 @@
     "defaultPageSize": 25,
     "maxPageSize": 100,
     "requireScopeFiltersForLargeQueries": true,
-    "mutationToolsEnabled": false
+    "mutationToolsEnabled": true,
+    "requireExplicitMutationConfirmation": true
   },
   "redaction": {
     "headers": [
@@ -45,7 +46,7 @@
     "logPromptPayloads": false
   },
   "leastPrivilege": {
-    "defaultRole": "read-only",
+    "defaultRole": "least-privilege",
     "smallestPracticalScope": true,
     "separateWriteIdentity": true
   }

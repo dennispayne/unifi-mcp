@@ -55,9 +55,11 @@ public static class UnifiMcpRuntimeLoader
             yield return Path.GetFullPath(environmentPath);
         }
 
-        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AddSearchRoots(roots, Environment.CurrentDirectory);
-        AddSearchRoots(roots, AppContext.BaseDirectory);
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.GetFullPath(Environment.CurrentDirectory),
+            Path.GetFullPath(AppContext.BaseDirectory)
+        };
 
         foreach (var root in roots)
         {
@@ -66,18 +68,4 @@ public static class UnifiMcpRuntimeLoader
         }
     }
 
-    private static void AddSearchRoots(HashSet<string> roots, string startPath)
-    {
-        if (string.IsNullOrWhiteSpace(startPath))
-        {
-            return;
-        }
-
-        for (var directory = new DirectoryInfo(startPath);
-             directory is not null;
-             directory = directory.Parent)
-        {
-            roots.Add(directory.FullName);
-        }
-    }
 }

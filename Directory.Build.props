@@ -1,10 +1,16 @@
 <Project>
   <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Authors>Dennis Payne</Authors>
+    <RepositoryUrl>https://github.com/dennispayne/unifi-mcp</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
-    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <AnalysisLevel>8.0-recommended</AnalysisLevel>
+    <NoWarn>$(NoWarn);CA1859</NoWarn>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 </Project>

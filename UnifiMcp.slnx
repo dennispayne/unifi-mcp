@@ -1,0 +1,16 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/Unifi.Mcp.Client/Unifi.Mcp.Client.csproj" />
+    <Project Path="src/UnifiMcp.Core/UnifiMcp.Core.csproj" />
+    <Project Path="src/UnifiMcp.Http/UnifiMcp.Http.csproj" />
+    <Project Path="src/UnifiMcp.Stdio/UnifiMcp.Stdio.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj" />
+  </Folder>
+</Solution>

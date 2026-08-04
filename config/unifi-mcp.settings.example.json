@@ -3,12 +3,19 @@
   "tokenRefreshSkew": "00:02:00",
   "server": {
     "name": "unifi-mcp",
-    "version": "0.1.0",
     "protocolVersion": "2024-11-05",
     "allowRawResponses": false,
     "maxCollectionItems": 25,
     "maxObjectProperties": 12,
-    "maxStringLength": 256
+    "maxStringLength": 256,
+    "maxUpstreamResponseBytes": 1048576,
+    "maxStdioMessageBytes": 1048576,
+    "maxSanitizedOutputCharacters": 32768,
+    "maxJsonDepth": 12,
+    "maxRequestBodyBytes": 262144,
+    "mutationApprovalKeyEnvironmentVariable": "UNIFI_MCP_MUTATION_APPROVAL_KEY",
+    "mutationApprovalMaxAgeSeconds": 300,
+    "maxOperationSchemaCharacters": 131072
   },
   "credentials": [
     {
@@ -26,22 +33,43 @@
     {
       "name": "site-manager",
       "baseAddress": "https://api.ui.com",
+      "service": "siteManager",
       "credential": "site-manager-key",
       "scopeDescription": "UniFi Site Manager inventory and health reads.",
       "sessionTtl": "00:55:00",
+      "allowMutations": true,
+      "allowedHttpMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "allowConnectorProxy": true,
+      "connectorAllowedPathPrefixes": [
+        "/proxy/network/integration/v1"
+      ],
       "allowedRelativePathPrefixes": [
         "/v1"
       ]
     },
     {
       "name": "network",
-      "baseAddress": "https://controller.example.invalid",
+      "baseAddress": "https://unifi/proxy/network/integration",
+      "service": "network",
       "credential": "network-key",
       "scopeDescription": "UniFi Network API reads for a controller or connector scope.",
       "sessionTtl": "00:55:00",
+      "allowMutations": true,
+      "allowedHttpMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "allowedRelativePathPrefixes": [
-        "/api",
-        "/proxy/network/api"
+        "/v1"
       ]
     }
   ]

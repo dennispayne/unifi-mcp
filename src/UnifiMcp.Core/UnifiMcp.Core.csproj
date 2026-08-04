@@ -10,4 +10,8 @@
     <ProjectReference Include="..\Unifi.Mcp.Client\Unifi.Mcp.Client.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="ApiContracts\*.json" />
+  </ItemGroup>
+
 </Project>

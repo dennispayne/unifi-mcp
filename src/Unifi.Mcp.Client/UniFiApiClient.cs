@@ -34,9 +34,29 @@ public sealed class UniFiApiClient : IUniFiApiClient
 
     public string? ScopeDescription => _profile.ScopeDescription;
 
+    public UniFiServiceKind Service => _profile.Service;
+
+    public bool AllowMutations => _profile.AllowMutations;
+
+    public IReadOnlySet<string> AllowedHttpMethods => _profile.GetNormalizedAllowedHttpMethods();
+
+    public bool AllowConnectorProxy => _profile.AllowConnectorProxy;
+
+    public IReadOnlyList<string> ConnectorAllowedPathPrefixes => _profile.GetNormalizedConnectorAllowedPathPrefixes();
+
     public Task<HttpResponseMessage> SendAsync(UniFiApiRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var method = request.Method.Method.ToUpperInvariant();
+        if (!AllowedHttpMethods.Contains(method) ||
+            request.Method != HttpMethod.Get && !_profile.AllowMutations)
+        {
+            throw new UniFiClientException(
+                $"UniFi profile '{_profile.Name}' does not allow HTTP {method}.",
+                _profile.Name,
+                StripQuery(request.RelativePath));
+        }
+
         var allowedPath = UniFiPathScopeGuard.EnsureAllowed(_profile, request.RelativePath);
         var scopedRequest = new UniFiApiRequest(request.Method, allowedPath, request.Body, request.ContentType, request.Headers);
         return SendWithTokenAsync(scopedRequest, allowRetryOnUnauthorized: true, cancellationToken);
@@ -65,14 +85,16 @@ public sealed class UniFiApiClient : IUniFiApiClient
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
             throw new UniFiClientException(
-                $"UniFi request for profile '{_profile.Name}' to '{request.RelativePath}' failed before a response was received.",
+                $"UniFi request for profile '{_profile.Name}' to '{StripQuery(request.RelativePath)}' failed before a response was received.",
                 _profile.Name,
-                request.RelativePath,
+                StripQuery(request.RelativePath),
                 retryable: true,
                 innerException: exception);
         }
 
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowRetryOnUnauthorized)
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+            allowRetryOnUnauthorized &&
+            request.Method == HttpMethod.Get)
         {
             response.Dispose();
             _tokenCache.Invalidate(_profile.Name);
@@ -84,9 +106,9 @@ public sealed class UniFiApiClient : IUniFiApiClient
             var statusCode = response.StatusCode;
             response.Dispose();
             throw new UniFiClientException(
-                $"UniFi request for profile '{_profile.Name}' to '{request.RelativePath}' failed with status {(int)statusCode}.",
+                $"UniFi request for profile '{_profile.Name}' to '{StripQuery(request.RelativePath)}' failed with status {(int)statusCode}.",
                 _profile.Name,
-                request.RelativePath,
+                StripQuery(request.RelativePath),
                 statusCode,
                 retryable: statusCode is System.Net.HttpStatusCode.RequestTimeout or System.Net.HttpStatusCode.TooManyRequests or >= System.Net.HttpStatusCode.InternalServerError);
         }
@@ -131,5 +153,11 @@ public sealed class UniFiApiClient : IUniFiApiClient
 
         token.Apply(message);
         return message;
+    }
+
+    private static string StripQuery(string path)
+    {
+        var queryIndex = path.IndexOf('?', StringComparison.Ordinal);
+        return queryIndex < 0 ? path : path[..queryIndex];
     }
 }

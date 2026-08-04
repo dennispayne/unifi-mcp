@@ -40,8 +40,12 @@ Recommended stages:
 - `UnifiMcp.Http` should keep auth and routing concerns out of the core server implementation.
 - MCP notifications such as `notifications/initialized` should not emit responses.
 
-## Next implementation targets
+## Implemented API surfaces
 
-1. Add higher-level UniFi inventory, health, and diagnostics tools on top of `unifi.scope.read`.
-2. Add endpoint-specific allowlists instead of relying only on generic redaction.
-3. Add more transport integration tests once concrete tools exist.
+- Site Manager hosts, sites, devices, ISP metrics, SD-WAN, and connector operations
+- Network application info, sites, devices, clients, networks, Wi-Fi broadcasts, and device statistics
+- Full Network configuration/action coverage through the generic API executor
+- Operation discovery and request schemas for all 87 official contract operations
+- Scope discovery and constrained generic requests for newly granted API scopes
+
+Concrete tools enforce service type and bounded pagination. Generic mutations require scope enablement, an allowed HTTP method, official-contract matching, and a one-time request-bound approval token. All output still passes through the shared sanitizer, so adding an endpoint cannot bypass the model-exposure policy.

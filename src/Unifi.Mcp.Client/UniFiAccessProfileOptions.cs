@@ -1,10 +1,31 @@
+using System.Text.Json.Serialization;
+
 namespace Unifi.Mcp.Client;
+
+[JsonConverter(typeof(JsonStringEnumConverter<UniFiServiceKind>))]
+public enum UniFiServiceKind
+{
+    Generic,
+    SiteManager,
+    Network
+}
 
 public sealed class UniFiAccessProfileOptions
 {
+    private static readonly HashSet<string> SupportedHttpMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+    };
+
     public required string Name { get; init; }
 
     public required Uri BaseAddress { get; init; }
+
+    public UniFiServiceKind Service { get; init; }
 
     public string? Username { get; init; }
 
@@ -24,7 +45,17 @@ public sealed class UniFiAccessProfileOptions
 
     public TimeSpan SessionTtl { get; init; } = TimeSpan.FromMinutes(55);
 
+    public string? PinnedServerCertificateSha256 { get; init; }
+
     public IReadOnlyList<string> AllowedRelativePathPrefixes { get; init; } = Array.Empty<string>();
+
+    public bool AllowMutations { get; init; }
+
+    public IReadOnlyList<string> AllowedHttpMethods { get; init; } = ["GET"];
+
+    public bool AllowConnectorProxy { get; init; }
+
+    public IReadOnlyList<string> ConnectorAllowedPathPrefixes { get; init; } = Array.Empty<string>();
 
     internal string ResolveUsername(Func<string, string?>? environmentVariableReader = null)
     {
@@ -96,6 +127,19 @@ public sealed class UniFiAccessProfileOptions
             .ToArray();
     }
 
+    internal IReadOnlySet<string> GetNormalizedAllowedHttpMethods() =>
+        AllowedHttpMethods
+            .Where(static method => !string.IsNullOrWhiteSpace(method))
+            .Select(static method => method.Trim().ToUpperInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    internal IReadOnlyList<string> GetNormalizedConnectorAllowedPathPrefixes() =>
+        ConnectorAllowedPathPrefixes
+            .Where(static prefix => !string.IsNullOrWhiteSpace(prefix))
+            .Select(static prefix => NormalizePathPrefix(prefix))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
     public void Validate(Func<string, string?>? environmentVariableReader = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Name);
@@ -132,6 +176,8 @@ public sealed class UniFiAccessProfileOptions
             throw new InvalidOperationException($"Profile '{Name}' must configure a positive session TTL.");
         }
 
+        ValidateCertificatePin();
+
         if (hasApiKey)
         {
             if (string.IsNullOrWhiteSpace(ApiKeyHeaderName))
@@ -155,6 +201,33 @@ public sealed class UniFiAccessProfileOptions
         if (GetNormalizedAllowedPathPrefixes().Count == 0)
         {
             throw new InvalidOperationException($"Profile '{Name}' must configure at least one allowed relative path prefix.");
+        }
+
+        var allowedMethods = GetNormalizedAllowedHttpMethods();
+        if (allowedMethods.Count == 0 || allowedMethods.Any(method => !SupportedHttpMethods.Contains(method)))
+        {
+            throw new InvalidOperationException($"Profile '{Name}' contains an unsupported HTTP method.");
+        }
+
+        if (!allowedMethods.Contains("GET"))
+        {
+            throw new InvalidOperationException($"Profile '{Name}' must allow GET.");
+        }
+
+        if (!AllowMutations && allowedMethods.Any(static method => !string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException($"Profile '{Name}' must enable mutations before allowing non-GET methods.");
+        }
+
+        if (AllowConnectorProxy && Service != UniFiServiceKind.SiteManager)
+        {
+            throw new InvalidOperationException($"Profile '{Name}' can enable connector proxy only for Site Manager.");
+        }
+
+        if (AllowConnectorProxy && GetNormalizedConnectorAllowedPathPrefixes().Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Profile '{Name}' must configure connector path prefixes when connector proxy is enabled.");
         }
     }
 
@@ -181,5 +254,19 @@ public sealed class UniFiAccessProfileOptions
     {
         var normalized = prefix.Trim();
         return normalized.StartsWith('/') ? normalized : "/" + normalized;
+    }
+
+    private void ValidateCertificatePin()
+    {
+        if (string.IsNullOrWhiteSpace(PinnedServerCertificateSha256))
+        {
+            return;
+        }
+
+        var normalized = PinnedServerCertificateSha256.Replace(":", string.Empty, StringComparison.Ordinal).Trim();
+        if (normalized.Length != 64 || normalized.Any(static character => !Uri.IsHexDigit(character)))
+        {
+            throw new InvalidOperationException($"Profile '{Name}' must configure a 64-character SHA-256 certificate pin.");
+        }
     }
 }

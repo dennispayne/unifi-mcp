@@ -206,6 +206,8 @@ public sealed class UniFiScopeOptions
 
     public Uri BaseAddress { get; init; } = null!;
 
+    public UniFiServiceKind Service { get; init; }
+
     public string Credential { get; init; } = string.Empty;
 
     public string? LoginPath { get; init; } = "/api/auth/login";
@@ -214,7 +216,17 @@ public sealed class UniFiScopeOptions
 
     public TimeSpan SessionTtl { get; init; } = TimeSpan.FromMinutes(55);
 
+    public string? PinnedServerCertificateSha256 { get; init; }
+
     public IReadOnlyList<string> AllowedRelativePathPrefixes { get; init; } = Array.Empty<string>();
+
+    public bool AllowMutations { get; init; }
+
+    public IReadOnlyList<string> AllowedHttpMethods { get; init; } = ["GET"];
+
+    public bool AllowConnectorProxy { get; init; }
+
+    public IReadOnlyList<string> ConnectorAllowedPathPrefixes { get; init; } = Array.Empty<string>();
 
     public void Validate()
     {
@@ -256,6 +268,7 @@ public sealed class UniFiScopeOptions
         {
             Name = Name,
             BaseAddress = BaseAddress,
+            Service = Service,
             Username = credential.Username,
             UsernameEnvironmentVariable = credential.UsernameEnvironmentVariable,
             Password = credential.Password,
@@ -265,7 +278,12 @@ public sealed class UniFiScopeOptions
             LoginPath = LoginPath,
             ScopeDescription = ScopeDescription,
             SessionTtl = SessionTtl,
-            AllowedRelativePathPrefixes = AllowedRelativePathPrefixes
+            PinnedServerCertificateSha256 = PinnedServerCertificateSha256,
+            AllowedRelativePathPrefixes = AllowedRelativePathPrefixes,
+            AllowMutations = AllowMutations,
+            AllowedHttpMethods = AllowedHttpMethods,
+            AllowConnectorProxy = AllowConnectorProxy,
+            ConnectorAllowedPathPrefixes = ConnectorAllowedPathPrefixes
         };
     }
 }

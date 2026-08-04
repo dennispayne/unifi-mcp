@@ -6,10 +6,13 @@ public sealed record McpRequest(
     string Jsonrpc,
     JsonElement? Id,
     string Method,
-    JsonElement? Params);
+    JsonElement? Params,
+    [property: System.Text.Json.Serialization.JsonIgnore]
+    bool HasId = false);
 
 public sealed record McpResponse(
     string Jsonrpc,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     JsonElement? Id,
     JsonElement? Result,
     McpError? Error);

@@ -14,7 +14,6 @@ obj/
 # Environment & secrets
 .env
 .env.*
-!.env.example
 appsettings.*.local.json
 config/unifi-mcp.settings.json
 *.pem

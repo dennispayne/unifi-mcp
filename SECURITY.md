@@ -11,11 +11,9 @@ This repository is intended to expose UniFi data through an MCP server without s
 
 ## Safe secret handling
 
-- Store secrets in an OS-backed PowerShell SecretManagement vault, not in source control or persistent environment variables.
-- Use `scripts\Start-UnifiMcp.ps1` so plaintext keys exist only in the launcher/MCP process environment and are removed at exit.
+- Supply secrets through environment variables inherited by the MCP process; do not place them in configuration or source control.
 - Never pass secrets in command-line arguments; process command lines are observable by other local tooling.
-- PowerShell SecretManagement is the primary provider. Windows Credential Manager is not used.
-- Password authentication is the default. `Initialize-UnifiMcpSecrets.ps1 -Unattended` is an explicit tradeoff for noninteractive MCP startup: local encryption remains, but the Windows user account becomes the only access boundary.
+- Use the operating system or MCP host's secret facility to populate those variables before launch.
 - Prefer named `credentials` reused across many `scopes`.
 - Do not place real secrets in examples, fixtures, screenshots, or documentation.
 - Redact sensitive request and response material before logging or returning it:

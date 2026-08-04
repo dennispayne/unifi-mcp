@@ -1,0 +1,35 @@
+name: .NET
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build UnifiMcp.slnx --configuration Release
+
+      - name: Run smoke tests
+        run: >-
+          dotnet run
+          --project tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj
+          --configuration Release
+          --no-build

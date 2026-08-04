@@ -44,8 +44,7 @@ internal sealed class MutationApprovalValidator
                 $"Mutation approval key environment variable '{_keyEnvironmentVariable}' is not available.");
         }
 
-        var bodyHash = Convert.ToHexString(SHA256.HashData(body ?? []));
-        var message = $"{expiresAt}\n{scope}\n{method}\n{path}\n{bodyHash}";
+        var message = MutationApprovalToken.BuildMessage(expiresAt, scope, method, path, body);
         var expected = HMACSHA256.HashData(Encoding.UTF8.GetBytes(key), Encoding.UTF8.GetBytes(message));
 
         byte[] provided;

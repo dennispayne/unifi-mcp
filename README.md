@@ -42,16 +42,10 @@ separate .NET installation is not required.
 2. Set the environment variables referenced by its credential entries.
 3. Optionally set `UNIFI_MCP_CONFIG` to an explicit configuration path.
 
-The example expects `UNIFI_SITE_MANAGER_API_KEY` for Site Manager and `UNIFI_NETWORK_API_KEY` for Network. For normal use, keep both values in a PowerShell SecretManagement vault and launch the MCP with `scripts\Start-UnifiMcp.ps1`; do not paste them into chat, configuration, command arguments, or persistent environment variables.
-
-```powershell
-Install-Module Microsoft.PowerShell.SecretManagement, Microsoft.PowerShell.SecretStore -Scope CurrentUser
-pwsh -NoLogo -NoProfile -File scripts\Initialize-UnifiMcpSecrets.ps1
-```
-
-SecretManagement is the default and primary integration. The launcher retrieves SecureStrings, places plaintext only in its process environment for inheritance by the MCP child, and restores the environment when the MCP exits. This is local and has no Azure, Azure Key Vault, or Windows Credential Manager dependency. It is vault-provider-neutral; specify `-Vault` when not using the default vault.
-
-The default setup requires the SecretStore password when a launcher process opens the vault. If an MCP client must launch it noninteractively, rerun setup with `-Unattended`. SecretStore remains encrypted locally, but any process running as your Windows account can then retrieve its contents without a second password. This enables child processes launched during an already-running Copilot session; it does not inject secrets into the Copilot process itself.
+The example expects `UNIFI_SITE_MANAGER_API_KEY` for Site Manager, `UNIFI_NETWORK_API_KEY`
+for Network, and `UNIFI_MCP_MUTATION_APPROVAL_KEY` for mutation approvals.
+Populate them through the MCP host or parent process environment. Do not paste
+values into chat, configuration files, or command arguments.
 
 The Network scope targets `https://unifi/proxy/network/integration`. For a private or self-signed console certificate, trust it in Windows or set `pinnedServerCertificateSha256` to its exact SHA-256 fingerprint. Never disable TLS validation.
 
@@ -61,7 +55,8 @@ The Network scope targets `https://unifi/proxy/network/integration`. For a priva
 
 ```powershell
 dotnet build UnifiMcp.slnx --configuration Release
-pwsh -NoLogo -NoProfile -File scripts\Start-UnifiMcp.ps1 -Mode Stdio
+.\src\UnifiMcp.Stdio\bin\Release\net8.0\UnifiMcp.Stdio.exe `
+  --config .\config\unifi-mcp.settings.json
 ```
 
 If Copilot inherits `UNIFI_SITE_MANAGER_API_KEY` and `UNIFI_NETWORK_API_KEY`, add the packaged stdio executable under `mcpServers` in `%USERPROFILE%\.copilot\mcp-config.json`:
@@ -104,12 +99,9 @@ If the file already contains other servers, merge only the `"unifi"` member into
 
 ### HTTP
 
-```powershell
-Set-Secret -Name UniFiMcpHttpToken -Secret (Read-Host 'HTTP bearer token' -AsSecureString)
-pwsh -NoLogo -NoProfile -File scripts\Start-UnifiMcp.ps1 -Mode Http `
-  -HttpAuthTokenSecretName UniFiMcpHttpToken `
-  -HttpAllowedOrigins 'https://trusted-client.example'
-```
+Set `UNIFI_MCP_HTTP_AUTH_TOKEN`, `UNIFI_MCP_HTTP_URLS`, and optionally
+`UNIFI_MCP_HTTP_ALLOWED_ORIGINS` in the inherited environment, then launch
+`UnifiMcp.Http` with `--config`.
 
 Endpoints are `POST /mcp` and `GET /healthz`. MCP requests require JSON content and an `Accept` header containing `application/json` or `*/*`. When an auth token is configured, send it as a Bearer authorization token. Authentication is mandatory for any non-loopback binding. Browser origins must be loopback or explicitly allowlisted.
 
@@ -146,15 +138,16 @@ The embedded official operation catalog covers 14 Site Manager v1.0.0 operations
 Each scope controls `allowMutations` and `allowedHttpMethods`. Site Manager connector forwarding is separately gated by `allowConnectorProxy` and `connectorAllowedPathPrefixes`, so wildcard connector operations cannot escape configured API families. Every non-GET call also requires a short-lived, one-time HMAC approval token bound to its exact scope, method, path, and body:
 
 ```powershell
-# Put the exact JSON request body in mutation-body.json, then generate approval.
-$token = pwsh -NoProfile -File scripts\New-UnifiMutationApproval.ps1 `
-  -Scope network `
-  -Method POST `
-  -Path '/v1/sites/<site-id>/networks' `
-  -BodyPath mutation-body.json
+$token = .\stdio\UnifiMcp.Stdio.exe --create-mutation-approval `
+  --scope network `
+  --method POST `
+  --path '/v1/sites/<site-id>/networks' `
+  --body-file mutation-body.json
 ```
 
-Pass the resulting value as `mutationApprovalToken` with the same body. The approval secret remains in SecretManagement and is never sent to the model. Direct-EXE launches must inherit `UNIFI_MCP_MUTATION_APPROVAL_KEY` in addition to the two API-key variables; `Start-UnifiMcp.ps1` loads all three automatically.
+Pass the resulting value as `mutationApprovalToken` with the exact same path
+and body. The command reads `UNIFI_MCP_MUTATION_APPROVAL_KEY` from its
+environment and prints only the short-lived token.
 
 Tools enforce path and method allowlists, cap request and response bodies, and return bounded, redacted output. Raw response summaries remain disabled unless `allowRawResponses` is explicitly enabled. Prefer the concrete tools for common reads and use the generic executor for the remaining official API surface.
 
@@ -180,16 +173,9 @@ dotnet run --project tests\Unifi.Mcp.Client.SmokeTests\Unifi.Mcp.Client.SmokeTes
 
 ## Creating a release
 
-Create self-contained release archives and checksums for the current operating
-system:
-
-```powershell
-pwsh -NoProfile -File scripts\Publish-Release.ps1 -Version 1.0.0
-```
-
-Artifacts are written to `artifacts\release`. Pushing an annotated `v1.0.0`
-tag runs the same validation and packaging process and creates a GitHub
-Release automatically.
+Pushing an annotated `v1.0.0` tag validates the solution, builds self-contained
+archives for all supported platforms, generates checksums, and creates the
+GitHub Release.
 
 ## License
 

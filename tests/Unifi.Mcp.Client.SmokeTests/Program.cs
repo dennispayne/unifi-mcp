@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Unifi.Mcp.Client;
@@ -1001,13 +1000,7 @@ static async Task<TException> AssertThrowsAsync<TException>(Func<Task> action)
 }
 
 static string CreateMutationApprovalToken(string key, string scope, string method, string path, byte[] body)
-{
-    var expiresAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds();
-    var bodyHash = Convert.ToHexString(SHA256.HashData(body));
-    var message = $"{expiresAt}\n{scope}\n{method}\n{path}\n{bodyHash}";
-    var signature = HMACSHA256.HashData(Encoding.UTF8.GetBytes(key), Encoding.UTF8.GetBytes(message));
-    return $"{expiresAt}.{Convert.ToBase64String(signature)}";
-}
+    => MutationApprovalToken.Create(key, scope, method, path, body, DateTimeOffset.UtcNow.AddMinutes(2));
 
 static void Ensure(bool condition, string message)
 {

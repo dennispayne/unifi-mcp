@@ -59,13 +59,59 @@ jobs:
           global-json-file: global.json
 
       - name: Build release archive
+        if: startsWith(matrix.rid, 'win-')
         shell: pwsh
         run: |
           $version = '${{ github.ref_name }}'.TrimStart('v')
-          ./scripts/Publish-Release.ps1 `
-            -Version $version `
-            -RuntimeIdentifiers '${{ matrix.rid }}' `
-            -SkipValidation
+          $packageName = "unifi-mcp-v$version-${{ matrix.rid }}"
+          $packageRoot = "artifacts/release/$packageName"
+          dotnet publish src/UnifiMcp.Stdio/UnifiMcp.Stdio.csproj `
+            -c Release -r '${{ matrix.rid }}' --self-contained true `
+            -o "$packageRoot/stdio" "-p:Version=$version" `
+            -p:PublishSingleFile=true -p:PublishTrimmed=false `
+            -p:DebugType=None -p:DebugSymbols=false
+          dotnet publish src/UnifiMcp.Http/UnifiMcp.Http.csproj `
+            -c Release -r '${{ matrix.rid }}' --self-contained true `
+            -o "$packageRoot/http" "-p:Version=$version" `
+            -p:PublishSingleFile=true -p:PublishTrimmed=false `
+            -p:DebugType=None -p:DebugSymbols=false
+          New-Item -ItemType Directory -Force "$packageRoot/config", "$packageRoot/docs" | Out-Null
+          Copy-Item config/*.example.json "$packageRoot/config"
+          Copy-Item docs/* "$packageRoot/docs"
+          Copy-Item README.md, SECURITY.md, LICENSE "$packageRoot"
+          @{ name = 'unifi-mcp'; version = $version; runtimeIdentifier = '${{ matrix.rid }}' } |
+            ConvertTo-Json | Set-Content "$packageRoot/version.json" -Encoding utf8NoBOM
+          Compress-Archive -LiteralPath $packageRoot `
+            -DestinationPath "artifacts/release/$packageName.zip" `
+            -CompressionLevel Optimal
+
+      - name: Build release archive
+        if: ${{ !startsWith(matrix.rid, 'win-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package_name="unifi-mcp-v${version}-${{ matrix.rid }}"
+          package_root="artifacts/release/${package_name}"
+          dotnet publish src/UnifiMcp.Stdio/UnifiMcp.Stdio.csproj \
+            -c Release -r '${{ matrix.rid }}' --self-contained true \
+            -o "${package_root}/stdio" "-p:Version=${version}" \
+            -p:PublishSingleFile=true -p:PublishTrimmed=false \
+            -p:DebugType=None -p:DebugSymbols=false
+          dotnet publish src/UnifiMcp.Http/UnifiMcp.Http.csproj \
+            -c Release -r '${{ matrix.rid }}' --self-contained true \
+            -o "${package_root}/http" "-p:Version=${version}" \
+            -p:PublishSingleFile=true -p:PublishTrimmed=false \
+            -p:DebugType=None -p:DebugSymbols=false
+          chmod +x "${package_root}/stdio/UnifiMcp.Stdio" "${package_root}/http/UnifiMcp.Http"
+          mkdir -p "${package_root}/config" "${package_root}/docs"
+          cp config/*.example.json "${package_root}/config/"
+          cp docs/* "${package_root}/docs/"
+          cp README.md SECURITY.md LICENSE "${package_root}/"
+          printf '{"name":"unifi-mcp","version":"%s","runtimeIdentifier":"%s"}\n' \
+            "${version}" '${{ matrix.rid }}' > "${package_root}/version.json"
+          tar -czf "artifacts/release/${package_name}.tar.gz" \
+            -C artifacts/release "${package_name}"
 
       - name: Upload release archive
         uses: actions/upload-artifact@v7

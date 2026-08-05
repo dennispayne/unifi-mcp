@@ -36,7 +36,7 @@ jobs:
       - name: Build
         run: dotnet build UnifiMcp.slnx --configuration Release
 
-      - name: Collect smoke-test coverage
+      - name: Collect test coverage
         id: tests
         continue-on-error: true
         shell: pwsh
@@ -46,7 +46,7 @@ jobs:
             --output artifacts/coverage/coverage.cobertura.xml `
             --output-format cobertura `
             -- dotnet run `
-              --project tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj `
+              --project tests/UnifiMcp.Tests/UnifiMcp.Tests.csproj `
               --configuration Release `
               --no-build
 
@@ -111,7 +111,7 @@ jobs:
           path: artifacts/coverage
           if-no-files-found: error
 
-      - name: Fail if smoke tests failed
+      - name: Fail if tests failed
         if: always() && steps.tests.outcome != 'success'
         shell: pwsh
         run: exit 1

@@ -11,6 +11,6 @@
     <Project Path="src/UnifiMcp.Stdio/UnifiMcp.Stdio.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj" />
+    <Project Path="tests/UnifiMcp.Tests/UnifiMcp.Tests.csproj" />
   </Folder>
 </Solution>

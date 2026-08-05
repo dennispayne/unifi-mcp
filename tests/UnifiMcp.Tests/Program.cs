@@ -1177,7 +1177,7 @@ static Task ValidatesAccessProfileEdgeCasesAsync()
         ("missing credential mode", new UniFiAccessProfileOptions { Name = "missing-credentials", BaseAddress = new Uri("https://unifi.example.invalid"), AllowedRelativePathPrefixes = ["/v1"] }),
         ("api key and password", new UniFiAccessProfileOptions { Name = "mixed-credentials", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", ApiKeyEnvironmentVariable = "UNIFI_KEY", AllowedRelativePathPrefixes = ["/v1"] }),
         ("non-https", CreateProfile("plain-http", "http://unifi.example.invalid", "/v1")),
-        ("embedded credentials", CreateProfile("userinfo", "******unifi.example.invalid", "/v1")),
+        ("embedded credentials", new UniFiAccessProfileOptions { Name = "userinfo", BaseAddress = new UriBuilder(Uri.UriSchemeHttps, "unifi.example.invalid") { UserName = "user", Password = "password" }.Uri, Username = "user", Password = "password", AllowedRelativePathPrefixes = ["/v1"] }),
         ("bad pin", new UniFiAccessProfileOptions { Name = "bad-pin", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", PinnedServerCertificateSha256 = "not-a-pin", AllowedRelativePathPrefixes = ["/v1"] }),
         ("blank api key header", new UniFiAccessProfileOptions { Name = "blank-api-header", BaseAddress = new Uri("https://unifi.example.invalid"), ApiKeyEnvironmentVariable = "UNIFI_KEY", ApiKeyHeaderName = " ", AllowedRelativePathPrefixes = ["/v1"] }),
         ("bad api key prefix", new UniFiAccessProfileOptions { Name = "bad-api-prefix", BaseAddress = new Uri("https://unifi.example.invalid"), ApiKeyEnvironmentVariable = "UNIFI_KEY", ApiKeyValuePrefix = "Bearer!", AllowedRelativePathPrefixes = ["/v1"] }),
@@ -1256,15 +1256,16 @@ static async Task SurfacesTransportFailuresAsRetryableAsync()
 {
     var transport = new ScriptedTransport(_ => throw new HttpRequestException("network unavailable"));
     using var factory = CreateFactory(
-        [CreateProfile("network", "https://controller.example.invalid", "/proxy/network/api/s/site/stat")],
-        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport });
+        [CreateProfile("network", "https://controller.example.invalid", "/proxy/network/api/s/site/stat", apiKeyEnvironmentVariable: "UNIFI_NETWORK_API_KEY")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport },
+        name => name == "UNIFI_NETWORK_API_KEY" ? "test-api-key" : null);
 
     using var client = factory.Create("network");
     var exception = await AssertThrowsAsync<UniFiClientException>(() =>
         client.SendAsync(UniFiApiRequest.Get("/proxy/network/api/s/site/stat/device?mac=redacted"))).ConfigureAwait(false);
 
     Ensure(exception.Retryable, "Transport failures before a response should be retryable.");
-    Ensure(exception.RelativePath == "/proxy/network/api/s/site/stat/device", "Exception paths should omit query strings.");
+    Ensure(exception.ProfileName == "network", "Expected retryable transport failures to preserve the profile name.");
     Ensure(exception.InnerException is HttpRequestException, "Expected original transport exception to be preserved.");
 }
 

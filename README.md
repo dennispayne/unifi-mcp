@@ -192,7 +192,7 @@ Requirements: .NET SDK 10.0.302 or a compatible feature-band SDK selected by
 ```powershell
 dotnet build UnifiMcp.slnx --configuration Release
 dotnet run `
-  --project tests\Unifi.Mcp.Client.SmokeTests\Unifi.Mcp.Client.SmokeTests.csproj `
+  --project tests\UnifiMcp.Tests\UnifiMcp.Tests.csproj `
   --configuration Release `
   --no-build
 ```
@@ -203,14 +203,14 @@ To reproduce the CI coverage report locally, install the pinned tool and run:
 dotnet tool install --global dotnet-coverage --version 18.9.0
 dotnet-coverage collect --output artifacts/coverage/coverage.cobertura.xml `
   --output-format cobertura -- `
-  dotnet run --project tests\Unifi.Mcp.Client.SmokeTests\Unifi.Mcp.Client.SmokeTests.csproj `
+  dotnet run --project tests\UnifiMcp.Tests\UnifiMcp.Tests.csproj `
   --configuration Release --no-build
 ```
 
 The configured per-assembly and overall line and branch floors are in
 [`config/coverage-thresholds.json`](config/coverage-thresholds.json). CI
 publishes both the Cobertura XML and an HTML report as the `coverage-reports`
-artifact. Assemblies that the smoke-test run never loads are reported as 0%
+artifact. Assemblies that the test run never loads are reported as 0%
 and are still evaluated against their configured floors.
 
 ## Documentation

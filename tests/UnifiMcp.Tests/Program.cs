@@ -1,8 +1,11 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Unifi.Mcp.Client;
 using UnifiMcp.Core;
+using HttpHost = UnifiMcp.Http.Program;
+using StdioHost = UnifiMcp.Stdio.Program;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
@@ -56,7 +59,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("validates server option edge cases", ValidatesServerOptionEdgeCasesAsync),
     ("validates configuration edge cases", ValidatesConfigurationEdgeCasesAsync),
     ("maps configuration to client profiles", MapsConfigurationToClientProfilesAsync),
-    ("handles stdio CRLF partials and write validation", HandlesStdioCrLfPartialsAndWriteValidationAsync)
+    ("handles stdio CRLF partials and write validation", HandlesStdioCrLfPartialsAndWriteValidationAsync),
+    ("validates HTTP host helpers", ValidatesHttpHostHelpersAsync),
+    ("validates stdio host argument helpers", ValidatesStdioHostArgumentHelpersAsync)
 };
 
 foreach (var (name, run) in tests)
@@ -1370,6 +1375,82 @@ static async Task HandlesStdioCrLfPartialsAndWriteValidationAsync()
         McpJsonRpcHost.WriteMessageAsync(new MemoryStream(), "line1\nline2")).ConfigureAwait(false);
     await AssertThrowsAsync<ArgumentOutOfRangeException>(() =>
         McpJsonRpcHost.ReadMessageAsync(new MemoryStream(), 0)).ConfigureAwait(false);
+}
+
+static Task ValidatesHttpHostHelpersAsync()
+{
+    var request = new DefaultHttpContext().Request;
+    Ensure(HttpHost.IsAuthorized(request, null), "HTTP requests should be authorized when no token is configured.");
+    Ensure(!HttpHost.IsAuthorized(request, "expected-token"), "HTTP requests without Authorization should fail when a token is configured.");
+
+    request.Headers.Authorization = "Basic expected-token";
+    Ensure(!HttpHost.IsAuthorized(request, "expected-token"), "HTTP requests must use bearer authorization.");
+
+    request.Headers.Authorization = "Bearer " + "wrong-token";
+    Ensure(!HttpHost.IsAuthorized(request, "expected-token"), "HTTP requests with the wrong bearer token should fail.");
+
+    request.Headers.Authorization = "Bearer " + "expected-token";
+    Ensure(HttpHost.IsAuthorized(request, "expected-token"), "HTTP requests with the expected bearer token should pass.");
+
+    Ensure(!HttpHost.IsJsonContentType(null), "Missing content type should not be treated as JSON.");
+    Ensure(!HttpHost.IsJsonContentType("text/plain"), "Non-JSON content type should not be accepted.");
+    Ensure(HttpHost.IsJsonContentType("application/json; charset=utf-8"), "JSON content type parameters should be accepted.");
+
+    var acceptRequest = new DefaultHttpContext().Request;
+    Ensure(!HttpHost.AcceptsJson(acceptRequest), "Missing Accept header should not accept JSON.");
+    acceptRequest.Headers.Accept = "text/plain, application/json";
+    Ensure(HttpHost.AcceptsJson(acceptRequest), "Explicit JSON Accept headers should be accepted.");
+    acceptRequest.Headers.Accept = "*/*";
+    Ensure(HttpHost.AcceptsJson(acceptRequest), "Wildcard Accept headers should be accepted.");
+
+    var origins = HttpHost.ParseAllowedOrigins("https://app.example.invalid/; http://admin.example.invalid");
+    Ensure(origins.Contains("https://app.example.invalid"), "Allowed origins should be normalized without a trailing slash.");
+    _ = AssertThrows<InvalidOperationException>(() => HttpHost.ParseAllowedOrigins("ftp://app.example.invalid"), "invalid allowed origin");
+
+    var originRequest = new DefaultHttpContext().Request;
+    Ensure(HttpHost.IsOriginAllowed(originRequest, origins), "Requests without Origin should be allowed.");
+    originRequest.Headers.Origin = "not an origin";
+    Ensure(!HttpHost.IsOriginAllowed(originRequest, origins), "Invalid origins should be rejected.");
+    originRequest.Headers.Origin = "http://localhost:3000";
+    Ensure(HttpHost.IsOriginAllowed(originRequest, origins), "Loopback origins should be allowed.");
+    originRequest.Headers.Origin = "https://app.example.invalid/";
+    Ensure(HttpHost.IsOriginAllowed(originRequest, origins), "Configured origins should be allowed.");
+
+    HttpHost.EnsureRemoteBindingsRequireAuthentication("http://127.0.0.1:8765;http://localhost:8766", null);
+    HttpHost.EnsureRemoteBindingsRequireAuthentication("http://0.0.0.0:8765", "token");
+    _ = AssertThrows<InvalidOperationException>(() => HttpHost.EnsureRemoteBindingsRequireAuthentication("http://0.0.0.0:8765", null), "remote binding without auth");
+    _ = AssertThrows<InvalidOperationException>(() => HttpHost.EnsureRemoteBindingsRequireAuthentication("http://*:8765", null), "wildcard binding without auth");
+    _ = AssertThrows<InvalidOperationException>(() => HttpHost.IsRemoteBinding("not-a-url"), "invalid binding URL");
+
+    Ensure(!HttpHost.IsRemoteBinding("http://127.0.0.1:8765"), "Loopback bindings should not be remote.");
+    Ensure(HttpHost.IsRemoteBinding("http://192.0.2.10:8765"), "Non-loopback bindings should be remote.");
+    Ensure(HttpHost.IsLoopbackHost("localhost"), "localhost should be loopback.");
+    Ensure(HttpHost.ReadConfigPathArgument(["--config", "config/custom.json"]) == "config/custom.json", "Expected split HTTP config argument to be parsed.");
+    Ensure(HttpHost.ReadConfigPathArgument(["--config=config/custom.json"]) == "config/custom.json", "Expected inline HTTP config argument to be parsed.");
+    Ensure(HttpHost.ReadConfigPathArgument(["--other"]) is null, "Expected missing HTTP config argument to return null.");
+    return Task.CompletedTask;
+}
+
+static Task ValidatesStdioHostArgumentHelpersAsync()
+{
+    Ensure(StdioHost.HasArgument(["--CREATE-MUTATION-APPROVAL"], "--create-mutation-approval"),
+        "Expected stdio argument detection to be case-insensitive.");
+    Ensure(StdioHost.ReadOptionalArgument(["--scope", "site-manager"], "--scope") == "site-manager",
+        "Expected split optional arguments to be parsed.");
+    Ensure(StdioHost.ReadOptionalArgument(["--scope=site-manager"], "--scope") == "site-manager",
+        "Expected inline optional arguments to be parsed.");
+    Ensure(StdioHost.ReadOptionalArgument(["--other"], "--scope") is null,
+        "Expected missing optional arguments to return null.");
+    Ensure(StdioHost.ReadRequiredArgument(["--method", "post"], "--method") == "post",
+        "Expected required argument values to be returned.");
+    _ = AssertThrows<InvalidOperationException>(() => StdioHost.ReadRequiredArgument([], "--path"), "missing required stdio argument");
+    Ensure(StdioHost.ReadConfigPathArgument(["--config", "config/custom.json"]) == "config/custom.json",
+        "Expected split stdio config argument to be parsed.");
+    Ensure(StdioHost.ReadConfigPathArgument(["--config=config/custom.json"]) == "config/custom.json",
+        "Expected inline stdio config argument to be parsed.");
+    Ensure(StdioHost.ReadConfigPathArgument(["--other"]) is null,
+        "Expected missing stdio config argument to return null.");
+    return Task.CompletedTask;
 }
 
 static UniFiApiClientFactory CreateFactory(

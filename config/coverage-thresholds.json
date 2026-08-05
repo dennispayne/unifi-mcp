@@ -1,24 +1,24 @@
 {
   "overall": {
-    "line": 0,
-    "branch": 0
+    "line": 50,
+    "branch": 55
   },
   "projects": {
     "Unifi.Mcp.Client": {
-      "line": 0,
-      "branch": 0
+      "line": 75,
+      "branch": 65
     },
     "UnifiMcp.Core": {
-      "line": 0,
-      "branch": 0
+      "line": 74,
+      "branch": 55
     },
     "UnifiMcp.Http": {
-      "line": 0,
-      "branch": 0
+      "line": 25,
+      "branch": 50
     },
     "UnifiMcp.Stdio": {
-      "line": 0,
-      "branch": 0
+      "line": 20,
+      "branch": 45
     }
   }
 }

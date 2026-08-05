@@ -50,6 +50,11 @@ jobs:
               --configuration Release `
               --no-build
 
+      - name: Require coverage report
+        if: always() && steps.tests.outcome == 'success' && hashFiles('artifacts/coverage/coverage.cobertura.xml') == ''
+        shell: pwsh
+        run: throw "Coverage collection completed successfully but did not produce artifacts/coverage/coverage.cobertura.xml."
+
       - name: Generate HTML coverage report
         if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
         shell: pwsh

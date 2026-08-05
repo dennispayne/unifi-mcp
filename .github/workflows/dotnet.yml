@@ -7,13 +7,14 @@ on:
   pull_request:
     branches:
       - master
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Build and Test
+  test-and-coverage:
+    name: Test and coverage
     runs-on: windows-latest
 
     steps:
@@ -25,12 +26,92 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install coverage tools
+        shell: pwsh
+        run: |
+          dotnet tool install --global dotnet-coverage --version 18.9.0
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.11
+          "$HOME\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - name: Build
         run: dotnet build UnifiMcp.slnx --configuration Release
 
-      - name: Run smoke tests
+      - name: Collect smoke-test coverage
+        id: tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/coverage | Out-Null
+          dotnet-coverage collect `
+            --output artifacts/coverage/coverage.cobertura.xml `
+            --output-format cobertura `
+            -- dotnet run `
+              --project tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj `
+              --configuration Release `
+              --no-build
+
+      - name: Generate HTML coverage report
+        if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
+        shell: pwsh
         run: >-
-          dotnet run
-          --project tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj
-          --configuration Release
-          --no-build
+          reportgenerator
+          -reports:artifacts/coverage/coverage.cobertura.xml
+          -targetdir:artifacts/coverage/html
+          '-reporttypes:HtmlInline_AzurePipelines;Cobertura'
+
+      - name: Summarize and enforce coverage
+        if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
+        shell: pwsh
+        run: |
+          $thresholds = Get-Content config/coverage-thresholds.json -Raw | ConvertFrom-Json -AsHashtable
+          [xml] $coverage = Get-Content artifacts/coverage/coverage.cobertura.xml
+          $packages = @{}
+          foreach ($package in $coverage.coverage.packages.package) {
+            $packages[$package.name] = $package
+          }
+
+          $rows = foreach ($name in $thresholds.projects.Keys | Sort-Object) {
+            $package = $packages[$name]
+
+            [PSCustomObject]@{
+              Name = $name
+              Line = if ($null -eq $package) { [double]0 } else { [double]$package.'line-rate' * 100 }
+              Branch = if ($null -eq $package) { [double]0 } else { [double]$package.'branch-rate' * 100 }
+              LineFloor = [double]$thresholds.projects[$name].line
+              BranchFloor = [double]$thresholds.projects[$name].branch
+            }
+          }
+
+          $overallLine = ($rows | Measure-Object -Property Line -Average).Average
+          $overallBranch = ($rows | Measure-Object -Property Branch -Average).Average
+          @(
+            '## Code coverage'
+            ''
+            '| Assembly | Line | Branch | Line floor | Branch floor |'
+            '| --- | ---: | ---: | ---: | ---: |'
+            ($rows | ForEach-Object { "| $($_.Name) | $($_.Line.ToString('F2'))% | $($_.Branch.ToString('F2'))% | $($_.LineFloor.ToString('F2'))% | $($_.BranchFloor.ToString('F2'))% |" })
+            "| **Overall** | **$($overallLine.ToString('F2'))%** | **$($overallBranch.ToString('F2'))%** | **$($thresholds.overall.line.ToString('F2'))%** | **$($thresholds.overall.branch.ToString('F2'))%** |"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+          $failed = @(
+            $rows | Where-Object { $_.Line -lt $_.LineFloor -or $_.Branch -lt $_.BranchFloor }
+          )
+          if ($overallLine -lt [double]$thresholds.overall.line -or $overallBranch -lt [double]$thresholds.overall.branch) {
+            $failed += [PSCustomObject]@{ Name = 'overall' }
+          }
+          if ($failed) {
+            throw "Coverage is below the configured floor for $($failed.Name -join ', ')."
+          }
+
+      - name: Upload coverage reports
+        if: always() && hashFiles('artifacts/coverage/**') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-reports
+          path: artifacts/coverage
+          if-no-files-found: error
+
+      - name: Fail if smoke tests failed
+        if: always() && steps.tests.outcome != 'success'
+        shell: pwsh
+        run: exit 1

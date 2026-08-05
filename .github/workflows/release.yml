@@ -10,24 +10,7 @@ permissions:
 
 jobs:
   validate:
-    runs-on: windows-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-
-      - name: Build and test
-        shell: pwsh
-        run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v')
-          dotnet build UnifiMcp.slnx --configuration Release "-p:Version=$version"
-          dotnet run --project tests/Unifi.Mcp.Client.SmokeTests/Unifi.Mcp.Client.SmokeTests.csproj `
-            --configuration Release --no-build
+    uses: ./.github/workflows/dotnet.yml
 
   package:
     needs: validate

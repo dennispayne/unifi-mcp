@@ -1301,9 +1301,9 @@ static Task ValidatesMutationApprovalTokensAsync()
 
 static Task ValidatesApiRequestAndOptionLoadersAsync()
 {
-    _ = AssertThrows<ArgumentNullException>(() => new UniFiApiRequest(null!, "/v1"), "null method");
-    _ = AssertThrows<ArgumentException>(() => new UniFiApiRequest(HttpMethod.Get, " "), "blank path");
-    _ = AssertThrows<ArgumentException>(() => new UniFiApiRequest(HttpMethod.Post, "/v1", [1, 2, 3]), "body without content type");
+    _ = AssertThrows<ArgumentNullException>(() => { _ = new UniFiApiRequest(null!, "/v1"); }, "null method");
+    _ = AssertThrows<ArgumentException>(() => { _ = new UniFiApiRequest(HttpMethod.Get, " "); }, "blank path");
+    _ = AssertThrows<ArgumentException>(() => { _ = new UniFiApiRequest(HttpMethod.Post, "/v1", [1, 2, 3]); }, "body without content type");
 
     var request = UniFiApiRequest.FromJson(HttpMethod.Post, "/v1/sites", new { name = "Default" }, headers: new Dictionary<string, string>
     {

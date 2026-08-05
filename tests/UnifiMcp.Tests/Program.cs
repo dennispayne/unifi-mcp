@@ -52,6 +52,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("rejects oversized upstream responses", RejectsOversizedUpstreamResponsesAsync),
     ("parses cookie headers defensively", ParsesCookieHeadersDefensivelyAsync),
     ("finds JSON values by name", FindsJsonValuesByNameAsync),
+    ("applies session tokens", AppliesSessionTokensAsync),
+    ("reuses and invalidates cached session tokens", ReusesAndInvalidatesCachedSessionTokensAsync),
+    ("validates mutation approval tokens", ValidatesMutationApprovalTokensAsync),
+    ("validates API request and option loaders", ValidatesApiRequestAndOptionLoadersAsync),
     ("validates access profile edge cases", ValidatesAccessProfileEdgeCasesAsync),
     ("validates client option edge cases", ValidatesClientOptionEdgeCasesAsync),
     ("rejects reserved caller headers", RejectsReservedCallerHeadersAsync),
@@ -59,6 +63,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("validates server option edge cases", ValidatesServerOptionEdgeCasesAsync),
     ("validates configuration edge cases", ValidatesConfigurationEdgeCasesAsync),
     ("maps configuration to client profiles", MapsConfigurationToClientProfilesAsync),
+    ("loads runtime and configuration files", LoadsRuntimeAndConfigurationFilesAsync),
+    ("creates default transports", CreatesDefaultTransportsAsync),
+    ("uses default JSON client helpers", UsesDefaultJsonClientHelpersAsync),
+    ("sanitizes JSON edge cases", SanitizesJsonEdgeCasesAsync),
+    ("reads bounded response edge cases", ReadsBoundedResponseEdgeCasesAsync),
     ("handles stdio CRLF partials and write validation", HandlesStdioCrLfPartialsAndWriteValidationAsync),
     ("validates HTTP host helpers", ValidatesHttpHostHelpersAsync),
     ("validates stdio host argument helpers", ValidatesStdioHostArgumentHelpersAsync)
@@ -1170,6 +1179,175 @@ static Task FindsJsonValuesByNameAsync()
     return Task.CompletedTask;
 }
 
+static Task AppliesSessionTokensAsync()
+{
+    var token = new UniFiSessionToken
+    {
+        ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
+        BearerToken = "bearer-token",
+        CsrfToken = "csrf-token",
+        Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["X-Custom"] = "custom-value"
+        },
+        Cookies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SESSION"] = "alpha",
+            ["csrf"] = "bravo"
+        }
+    };
+
+    using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/hosts");
+    token.Apply(request);
+
+    Ensure(request.Headers.Authorization?.Scheme == "Bearer", "Expected bearer tokens to set Authorization scheme.");
+    Ensure(request.Headers.Authorization?.Parameter == "bearer-token", "Expected bearer tokens to set Authorization value.");
+    Ensure(request.Headers.GetValues("X-CSRF-Token").Single() == "csrf-token", "Expected CSRF tokens to be applied.");
+    Ensure(request.Headers.GetValues("X-Custom").Single() == "custom-value", "Expected custom token headers to be applied.");
+    Ensure(request.Headers.GetValues("Cookie").Single() == "SESSION=alpha; csrf=bravo", "Expected cookies to be joined for requests.");
+    Ensure(!token.IsExpired(DateTimeOffset.UtcNow, TimeSpan.Zero), "Expected future tokens to be reusable.");
+    Ensure(token.IsExpired(DateTimeOffset.UtcNow.AddMinutes(10), TimeSpan.Zero), "Expected past tokens to be expired.");
+    _ = AssertThrows<ArgumentNullException>(() => token.Apply(null!), "null request");
+    return Task.CompletedTask;
+}
+
+static async Task ReusesAndInvalidatesCachedSessionTokensAsync()
+{
+    var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    using var cache = new InMemoryUniFiSessionTokenCache(timeProvider);
+    var profile = CreateProfile("network", "https://controller.example.invalid", "/v1");
+    var factoryCalls = 0;
+
+    Task<UniFiSessionToken> CreateTokenAsync(CancellationToken _)
+    {
+        factoryCalls++;
+        return Task.FromResult(new UniFiSessionToken { ExpiresAt = timeProvider.GetUtcNow().AddMinutes(5) });
+    }
+
+    var first = await cache.GetOrCreateAsync(profile, CreateTokenAsync, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    var second = await cache.GetOrCreateAsync(profile, CreateTokenAsync, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    Ensure(ReferenceEquals(first, second), "Expected reusable cached tokens to be returned.");
+    Ensure(factoryCalls == 1, "Expected cached tokens to avoid duplicate token factory calls.");
+
+    cache.Invalidate("NETWORK");
+    var afterInvalidate = await cache.GetOrCreateAsync(profile, CreateTokenAsync, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    Ensure(!ReferenceEquals(first, afterInvalidate), "Expected invalidated tokens to be replaced.");
+    Ensure(factoryCalls == 2, "Expected invalidation to force another token factory call.");
+
+    timeProvider.Advance(TimeSpan.FromMinutes(10));
+    var afterExpiry = await cache.GetOrCreateAsync(profile, CreateTokenAsync, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    Ensure(!ReferenceEquals(afterInvalidate, afterExpiry), "Expected expired tokens to be replaced.");
+    Ensure(factoryCalls == 3, "Expected expired tokens to force another token factory call.");
+
+    await AssertThrowsAsync<ArgumentNullException>(() => cache.GetOrCreateAsync(null!, CreateTokenAsync, TimeSpan.Zero)).ConfigureAwait(false);
+    await AssertThrowsAsync<ArgumentNullException>(() => cache.GetOrCreateAsync(profile, null!, TimeSpan.Zero)).ConfigureAwait(false);
+    _ = AssertThrows<ArgumentException>(() => cache.Invalidate(" "), "blank profile name");
+}
+
+static Task ValidatesMutationApprovalTokensAsync()
+{
+    var environmentVariable = "UNIFI_MCP_TEST_MUTATION_APPROVAL_" + Guid.NewGuid().ToString("N");
+    Environment.SetEnvironmentVariable(environmentVariable, "test-approval-key");
+    try
+    {
+        var validator = new MutationApprovalValidator(environmentVariable, 300);
+        var body = Encoding.UTF8.GetBytes("""{"name":"Default"}""");
+        var token = MutationApprovalToken.Create(
+            "test-approval-key",
+            "network",
+            "POST",
+            "/v1/sites",
+            body,
+            DateTimeOffset.UtcNow.AddMinutes(2));
+
+        validator.Validate(token, "network", "POST", "/v1/sites", body);
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate(token, "network", "POST", "/v1/sites", body), "replayed token");
+
+        var otherBodyToken = MutationApprovalToken.Create(
+            "test-approval-key",
+            "network",
+            "POST",
+            "/v1/sites",
+            body,
+            DateTimeOffset.UtcNow.AddMinutes(2));
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate(otherBodyToken, "network", "POST", "/v1/sites", Encoding.UTF8.GetBytes("{}")), "wrong body");
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate("not-a-token", "network", "POST", "/v1/sites", body), "malformed token");
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate($"{DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds()}.not-base64!", "network", "POST", "/v1/sites", body), "bad base64");
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate(
+            MutationApprovalToken.Create("test-approval-key", "network", "POST", "/v1/sites", body, DateTimeOffset.UtcNow.AddSeconds(-1)),
+            "network",
+            "POST",
+            "/v1/sites",
+            body), "expired token");
+        _ = AssertThrows<InvalidOperationException>(() => validator.Validate(
+            MutationApprovalToken.Create("test-approval-key", "network", "POST", "/v1/sites", body, DateTimeOffset.UtcNow.AddMinutes(10)),
+            "network",
+            "POST",
+            "/v1/sites",
+            body), "future token");
+
+        Environment.SetEnvironmentVariable(environmentVariable, null);
+        var missingKeyToken = MutationApprovalToken.Create("test-approval-key", "network", "POST", "/v1/sites", body, DateTimeOffset.UtcNow.AddMinutes(2));
+        _ = AssertThrows<InvalidOperationException>(() => new MutationApprovalValidator(environmentVariable, 300).Validate(missingKeyToken, "network", "POST", "/v1/sites", body), "missing key");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(environmentVariable, null);
+    }
+
+    _ = AssertThrows<ArgumentException>(() => MutationApprovalToken.Create("", "network", "POST", "/v1/sites", null, DateTimeOffset.UtcNow.AddMinutes(2)), "blank approval key");
+    return Task.CompletedTask;
+}
+
+static Task ValidatesApiRequestAndOptionLoadersAsync()
+{
+    _ = AssertThrows<ArgumentNullException>(() => new UniFiApiRequest(null!, "/v1"), "null method");
+    _ = AssertThrows<ArgumentException>(() => new UniFiApiRequest(HttpMethod.Get, " "), "blank path");
+    _ = AssertThrows<ArgumentException>(() => new UniFiApiRequest(HttpMethod.Post, "/v1", [1, 2, 3]), "body without content type");
+
+    var request = UniFiApiRequest.FromJson(HttpMethod.Post, "/v1/sites", new { name = "Default" }, headers: new Dictionary<string, string>
+    {
+        ["X-Test"] = "value"
+    });
+    Ensure(request.ContentType == "application/json", "Expected JSON requests to use application/json.");
+    Ensure(request.Body is { Length: > 0 }, "Expected JSON requests to serialize request bodies.");
+    Ensure(request.Headers["X-Test"] == "value", "Expected JSON requests to preserve caller headers.");
+
+    const string OptionsJson = """
+        {
+          "profiles": [
+            {
+              "name": "network",
+              "baseAddress": "https://controller.example.invalid",
+              "username": "readonly",
+              "password": "test-password",
+              "allowedRelativePathPrefixes": ["/v1"]
+            }
+          ]
+        }
+        """;
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(OptionsJson));
+    var options = UniFiApiClientOptionsLoader.Load(stream);
+    Ensure(options.Profiles.Single().Name == "network", "Expected client options streams to load profiles.");
+
+    var tempDirectory = Path.Combine(Path.GetTempPath(), "unifi-mcp-options-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDirectory);
+    var optionsPath = Path.Combine(tempDirectory, "client-options.json");
+    File.WriteAllText(optionsPath, OptionsJson);
+    try
+    {
+        Ensure(UniFiApiClientOptionsLoader.LoadFromFile(optionsPath).Profiles.Single().BaseAddress.Host == "controller.example.invalid",
+            "Expected client options files to load profiles.");
+        _ = AssertThrows<ArgumentException>(() => UniFiApiClientOptionsLoader.LoadFromFile(" "), "blank options file");
+    }
+    finally
+    {
+        Directory.Delete(tempDirectory, recursive: true);
+    }
+
+    return Task.CompletedTask;
+}
+
 static Task ValidatesAccessProfileEdgeCasesAsync()
 {
     var invalidProfiles = new (string Name, UniFiAccessProfileOptions Profile)[]
@@ -1350,6 +1528,181 @@ static Task MapsConfigurationToClientProfilesAsync()
     Ensure(profile.AllowConnectorProxy, "Expected connector proxy setting to map to profile.");
     Ensure(profile.GetNormalizedConnectorAllowedPathPrefixes().Single() == "/proxy/network", "Expected connector prefixes to map to profile.");
     return Task.CompletedTask;
+}
+
+static Task LoadsRuntimeAndConfigurationFilesAsync()
+{
+    const string ConfigJson = """
+        {
+          "credentials": [
+            {
+              "name": "password",
+              "username": "readonly",
+              "password": "test-password"
+            }
+          ],
+          "scopes": [
+            {
+              "name": "network",
+              "credential": "password",
+              "baseAddress": "https://controller.example.invalid",
+              "allowedRelativePathPrefixes": ["/proxy/network/api/s/site"]
+            }
+          ]
+        }
+        """;
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(ConfigJson));
+    var loaded = UnifiMcpConfigurationLoader.Load(stream);
+    Ensure(loaded.Credentials.Single().Name == "password", "Expected configuration streams to load credentials.");
+
+    var tempDirectory = Path.Combine(Path.GetTempPath(), "unifi-mcp-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDirectory);
+    var configPath = Path.Combine(tempDirectory, "unifi-mcp.settings.json");
+    File.WriteAllText(configPath, ConfigJson);
+
+    try
+    {
+        var loadedFromFile = UnifiMcpConfigurationLoader.LoadFromFile(configPath);
+        Ensure(loadedFromFile.Scopes.Single().Name == "network", "Expected configuration files to load scopes.");
+        Ensure(UnifiMcpRuntimeLoader.ResolveConfigPath(configPath) == Path.GetFullPath(configPath),
+            "Expected explicit config paths to resolve to full paths.");
+
+        var priorEnvironmentPath = Environment.GetEnvironmentVariable("UNIFI_MCP_CONFIG");
+        try
+        {
+            Environment.SetEnvironmentVariable("UNIFI_MCP_CONFIG", configPath);
+            Ensure(UnifiMcpRuntimeLoader.ResolveConfigPath() == Path.GetFullPath(configPath),
+                "Expected environment config paths to be considered.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("UNIFI_MCP_CONFIG", priorEnvironmentPath);
+        }
+
+        using var runtime = UnifiMcpRuntimeLoader.LoadFromPath(configPath);
+        Ensure(runtime.Configuration.Scopes.Count == 1, "Expected runtime loading to preserve configuration.");
+        Ensure(runtime.Server is not null, "Expected runtime loading to create a server.");
+        Ensure(runtime.Host is not null, "Expected runtime loading to create a JSON-RPC host.");
+
+        var missingPath = Path.Combine(tempDirectory, "missing.json");
+        _ = AssertThrows<FileNotFoundException>(() => UnifiMcpRuntimeLoader.ResolveConfigPath(missingPath), "missing config path");
+    }
+    finally
+    {
+        Directory.Delete(tempDirectory, recursive: true);
+    }
+
+    return Task.CompletedTask;
+}
+
+static async Task CreatesDefaultTransportsAsync()
+{
+    var profile = CreateProfile("default", "https://controller.example.invalid/base", "/base");
+    using var transport = new DefaultUniFiTransportFactory().Create(profile);
+    Ensure(transport is not null, "Expected the default transport factory to create a transport.");
+    _ = AssertThrows<ArgumentNullException>(() => new DefaultUniFiTransportFactory().Create(null!), "null profile");
+    _ = AssertThrows<ArgumentNullException>(() => transport!.SendAsync(null!), "null HTTP request");
+
+    using var pinnedTransport = new DefaultUniFiTransportFactory().Create(new UniFiAccessProfileOptions
+    {
+        Name = "pinned",
+        BaseAddress = new Uri("https://controller.example.invalid"),
+        Username = "readonly",
+        Password = "test-password",
+        PinnedServerCertificateSha256 = string.Concat(Enumerable.Repeat("a1", 32)),
+        AllowedRelativePathPrefixes = ["/api"]
+    });
+    Ensure(pinnedTransport is not null, "Expected pinned transports to be created.");
+
+    using var request = new HttpRequestMessage(HttpMethod.Get, "/base/health");
+    using var cancellation = new CancellationTokenSource();
+    await cancellation.CancelAsync().ConfigureAwait(false);
+    _ = await AssertThrowsAsync<TaskCanceledException>(() => transport!.SendAsync(request, cancellation.Token)).ConfigureAwait(false);
+}
+
+static async Task UsesDefaultJsonClientHelpersAsync()
+{
+    IUniFiApiClient client = new FakeApiClient(request =>
+    {
+        if (request.Method == HttpMethod.Get)
+        {
+            Ensure(RequestPathHelper.GetPath(request) == "/v1/hosts", "Expected GET helper to target the requested path.");
+            return Responses.Json(request, """{"items":[{"id":"host-1"}]}""");
+        }
+
+        Ensure(request.Method == HttpMethod.Post, "Expected JSON helper to use the requested method.");
+        Ensure(RequestPathHelper.GetPath(request) == "/v1/sites", "Expected JSON helper to target the requested path.");
+        return Responses.Json(request, """{"id":"site-1"}""");
+    });
+
+    var getResult = await client.GetFromJsonAsync<JsonElement>("/v1/hosts").ConfigureAwait(false);
+    Ensure(getResult.GetProperty("items").GetArrayLength() == 1, "Expected default GET JSON helper to deserialize response bodies.");
+
+    var postResult = await client.SendJsonAsync<object, JsonElement>(HttpMethod.Post, "/v1/sites", new { name = "Default" }).ConfigureAwait(false);
+    Ensure(postResult.GetProperty("id").GetString() == "site-1", "Expected default send JSON helper to deserialize response bodies.");
+
+}
+
+static Task SanitizesJsonEdgeCasesAsync()
+{
+    Ensure(JsonSanitizer.Summarize(" ", 2, 2, 8, 128, 4) == "Empty response.",
+        "Expected blank payloads to be summarized as empty.");
+    Ensure(JsonSanitizer.Summarize("not-json", 2, 2, 8, 128, 4).Contains("non-JSON", StringComparison.Ordinal),
+        "Expected non-JSON summaries to omit raw payloads.");
+
+    var nonJsonElement = JsonSanitizer.SanitizeToElement("not-json", 2, 2, 8, 128, 4);
+    Ensure(nonJsonElement.GetProperty("omitted").GetBoolean(), "Expected non-JSON elements to be marked omitted.");
+    Ensure(!JsonSanitizer.SanitizeToElement("", 2, 2, 8, 128, 4).EnumerateObject().Any(),
+        "Expected empty JSON elements to be empty objects.");
+
+    var summary = JsonSanitizer.Summarize(
+        """{"password":"secret","items":[1,2,3],"nested":{"enabled":true,"value":null},"description":"abcdef"}""",
+        maxCollectionItems: 2,
+        maxObjectProperties: 4,
+        maxStringLength: 3,
+        maxOutputCharacters: 256,
+        maxDepth: 4);
+    Ensure(summary.Contains("[redacted]", StringComparison.Ordinal), "Expected sensitive values to be redacted.");
+    Ensure(summary.Contains("_truncated", StringComparison.Ordinal), "Expected oversized collections to be marked truncated.");
+    Ensure(summary.Contains("abc...", StringComparison.Ordinal), "Expected long strings to be truncated.");
+    Ensure(!summary.Contains("secret", StringComparison.Ordinal), "Expected secrets to be omitted from summaries.");
+
+    var depthLimited = JsonSanitizer.Summarize("""{"outer":{"inner":{"value":true}}}""", 4, 4, 16, 256, 1);
+    Ensure(depthLimited.Contains("[truncated]", StringComparison.Ordinal), "Expected depth-limited values to be truncated.");
+
+    var outputLimited = JsonSanitizer.SanitizeToElement("""{"long":"abcdefghijklmnopqrstuvwxyz"}""", 4, 4, 32, 8, 4);
+    Ensure(outputLimited.GetString() == "[output truncated]", "Expected output-limited elements to be replaced.");
+    return Task.CompletedTask;
+}
+
+static async Task ReadsBoundedResponseEdgeCasesAsync()
+{
+    using var emptyResponse = new HttpResponseMessage(HttpStatusCode.OK);
+    Ensure(await BoundedResponseReader.ReadAsStringAsync(emptyResponse, 16, "profile", "/path", CancellationToken.None).ConfigureAwait(false) == string.Empty,
+        "Expected responses without content to read as empty.");
+
+    using var invalidCharsetResponse = new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new ByteArrayContent(Encoding.UTF8.GetBytes("hello"))
+    };
+    invalidCharsetResponse.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain")
+    {
+        CharSet = "invalid-charset"
+    };
+    Ensure(await BoundedResponseReader.ReadAsStringAsync(invalidCharsetResponse, 16, "profile", "/path", CancellationToken.None).ConfigureAwait(false) == "hello",
+        "Expected invalid charsets to fall back to UTF-8.");
+
+    var latinBytes = Encoding.GetEncoding("iso-8859-1").GetBytes("café");
+    using var latinResponse = new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new ByteArrayContent(latinBytes)
+    };
+    latinResponse.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain")
+    {
+        CharSet = "\"iso-8859-1\""
+    };
+    Ensure(await BoundedResponseReader.ReadAsStringAsync(latinResponse, 16, "profile", "/path", CancellationToken.None).ConfigureAwait(false) == "café",
+        "Expected quoted valid charsets to be honored.");
 }
 
 static async Task HandlesStdioCrLfPartialsAndWriteValidationAsync()
@@ -1637,6 +1990,62 @@ internal sealed class ScriptedTransport : IUniFiTransport
     public void Dispose()
     {
     }
+}
+
+internal sealed class FakeApiClient(Func<HttpRequestMessage, HttpResponseMessage> handler) : IUniFiApiClient
+{
+    public string ProfileName => "fake";
+
+    public string? ScopeDescription => null;
+
+    public UniFiServiceKind Service => UniFiServiceKind.Generic;
+
+    public bool AllowMutations => true;
+
+    public IReadOnlySet<string> AllowedHttpMethods { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "GET",
+        "POST"
+    };
+
+    public bool AllowConnectorProxy => false;
+
+    public IReadOnlyList<string> ConnectorAllowedPathPrefixes => [];
+
+    public Task<HttpResponseMessage> SendAsync(UniFiApiRequest request, CancellationToken cancellationToken = default)
+    {
+        using var content = request.Body is null
+            ? null
+            : new ByteArrayContent(request.Body);
+        if (content is not null)
+        {
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.ContentType!);
+        }
+
+        var message = new HttpRequestMessage(request.Method, request.RelativePath)
+        {
+            Content = content
+        };
+        foreach (var (name, value) in request.Headers)
+        {
+            message.Headers.TryAddWithoutValidation(name, value);
+        }
+
+        return Task.FromResult(handler(message));
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+{
+    private DateTimeOffset _now = now;
+
+    public override DateTimeOffset GetUtcNow() => _now;
+
+    public void Advance(TimeSpan value) => _now = _now.Add(value);
 }
 
 internal static class RequestPathHelper

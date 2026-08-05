@@ -50,7 +50,7 @@ internal static class JsonSanitizer
             using var document = JsonDocument.Parse(payload);
             var budget = new SanitizationBudget(maxOutputCharacters, maxDepth);
             var node = Sanitize(document.RootElement, maxCollectionItems, maxObjectProperties, maxStringLength, budget, 0);
-            var result = node?.ToJsonString(new JsonSerializerOptions { WriteIndented = false }) ?? "null";
+            var result = node?.ToJsonString() ?? "null";
             return result.Length <= maxOutputCharacters ? result : "\"[output truncated]\"";
         }
         catch (JsonException)

@@ -58,11 +58,14 @@ jobs:
       - name: Generate HTML coverage report
         if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
         shell: pwsh
-        run: >-
+        run: |
           reportgenerator
           -reports:artifacts/coverage/coverage.cobertura.xml
           -targetdir:artifacts/coverage/html
-          '-reporttypes:HtmlInline_AzurePipelines;Cobertura'
+          '-reporttypes:HtmlInline_AzurePipelines;Cobertura;MarkdownSummaryGithub'
+          if (Test-Path artifacts/coverage/html/SummaryGithub.md) {
+            Get-Content artifacts/coverage/html/SummaryGithub.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
 
       - name: Summarize and enforce coverage
         if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
@@ -87,8 +90,8 @@ jobs:
             }
           }
 
-          $overallLine = ($rows | Measure-Object -Property Line -Average).Average
-          $overallBranch = ($rows | Measure-Object -Property Branch -Average).Average
+          $overallLine = [double]$coverage.coverage.'line-rate' * 100
+          $overallBranch = [double]$coverage.coverage.'branch-rate' * 100
           @(
             '## Code coverage'
             ''

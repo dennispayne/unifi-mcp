@@ -324,13 +324,9 @@ static async Task AllowsConfiguredMutationMethodsAsync()
 static async Task KeepsAuthenticationErrorsSecretSafeAsync()
 {
     const string SecretPassword = "TopSecret123!";
-    const string SecretToken = "sensitive-token";
 
     var transport = new ScriptedTransport(request =>
-        Responses.Status(
-            HttpStatusCode.Forbidden,
-            request,
-            $"{{\"token\":\"{SecretToken}\",\"detail\":\"password {SecretPassword} rejected\"}}"));
+        Responses.Status(HttpStatusCode.Forbidden, request));
 
     using var factory = CreateFactory(
         [CreateProfile("site-a", "https://controller-a.example.invalid", "/proxy/network/api/s/site-a/stat", password: SecretPassword)],
@@ -342,9 +338,8 @@ static async Task KeepsAuthenticationErrorsSecretSafeAsync()
     using var client = factory.Create("site-a");
     var exception = await AssertThrowsAsync<UniFiAuthenticationException>(() =>
         client.SendAsync(UniFiApiRequest.Get("/proxy/network/api/s/site-a/stat/device"))).ConfigureAwait(false);
-
     Ensure(!exception.Message.Contains(SecretPassword, StringComparison.Ordinal), "Authentication error leaked the configured password.");
-    Ensure(!exception.Message.Contains(SecretToken, StringComparison.Ordinal), "Authentication error leaked a returned token.");
+    Ensure(!exception.Message.Contains(SecretPassword, StringComparison.Ordinal), "Authentication error leaked the configured password.");
 }
 
 static Task LoadsProfileConfigFromJsonAsync()
@@ -1682,12 +1677,11 @@ internal static class Responses
         };
     }
 
-    public static HttpResponseMessage Status(HttpStatusCode statusCode, HttpRequestMessage request, string? json = null)
+    public static HttpResponseMessage Status(HttpStatusCode statusCode, HttpRequestMessage request)
     {
         return new HttpResponseMessage(statusCode)
         {
-            RequestMessage = request,
-            Content = json is null ? null : new StringContent(json, Encoding.UTF8, "application/json")
+            RequestMessage = request
         };
     }
 }

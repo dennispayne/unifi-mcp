@@ -46,7 +46,17 @@ var tests = new (string Name, Func<Task> Run)[]
     ("discovers added service operation schemas", DiscoversAddedServiceOperationSchemasAsync),
     ("rejects undocumented added service operations", RejectsUndocumentedAddedServiceOperationsAsync),
     ("requires approval for added service mutations", RequiresApprovalForAddedServiceMutationsAsync),
-    ("rejects oversized upstream responses", RejectsOversizedUpstreamResponsesAsync)
+    ("rejects oversized upstream responses", RejectsOversizedUpstreamResponsesAsync),
+    ("parses cookie headers defensively", ParsesCookieHeadersDefensivelyAsync),
+    ("finds JSON values by name", FindsJsonValuesByNameAsync),
+    ("validates access profile edge cases", ValidatesAccessProfileEdgeCasesAsync),
+    ("validates client option edge cases", ValidatesClientOptionEdgeCasesAsync),
+    ("rejects reserved caller headers", RejectsReservedCallerHeadersAsync),
+    ("surfaces transport failures as retryable", SurfacesTransportFailuresAsRetryableAsync),
+    ("validates server option edge cases", ValidatesServerOptionEdgeCasesAsync),
+    ("validates configuration edge cases", ValidatesConfigurationEdgeCasesAsync),
+    ("maps configuration to client profiles", MapsConfigurationToClientProfilesAsync),
+    ("handles stdio CRLF partials and write validation", HandlesStdioCrLfPartialsAndWriteValidationAsync)
 };
 
 foreach (var (name, run) in tests)
@@ -1123,6 +1133,244 @@ static async Task RequiresApprovalForAddedServiceMutationsAsync()
     Ensure(transport.ApiRequestCount == 0, "Unapproved Protect mutation must not reach transport.");
 }
 
+static Task ParsesCookieHeadersDefensivelyAsync()
+{
+    using var response = new HttpResponseMessage(HttpStatusCode.OK);
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "SESSION=first; Path=/; HttpOnly");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "  ");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "malformed");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "=missing-name");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "empty=   ; Path=/");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "SESSION=second; Secure");
+    response.Headers.TryAddWithoutValidation("Set-Cookie", "csrf=token=value; Path=/");
+
+    var cookies = SetCookieParser.Parse(response);
+
+    Ensure(cookies.Count == 2, $"Expected two parsed cookies, got {cookies.Count}.");
+    Ensure(cookies["SESSION"] == "second", "Expected later duplicate cookies to win.");
+    Ensure(cookies["csrf"] == "token=value", "Expected cookie values containing '=' to be preserved.");
+    return Task.CompletedTask;
+}
+
+static Task FindsJsonValuesByNameAsync()
+{
+    using var document = JsonDocument.Parse(
+        """{"items":[{"nested":{"count":"42","enabled":true}},{"id":123}],"ignored":null}""");
+
+    Ensure(JsonSearch.TryFindString(document.RootElement, ["id"], out var id) && id == "123",
+        "Expected numeric JSON values to be returned as strings.");
+    Ensure(JsonSearch.TryFindString(document.RootElement, ["enabled"], out var enabled) && enabled == bool.TrueString,
+        "Expected boolean JSON values to be returned as strings.");
+    Ensure(JsonSearch.TryFindInt32(document.RootElement, ["count"], out var count) && count == 42,
+        "Expected numeric strings to be parsed as Int32.");
+    Ensure(!JsonSearch.TryFindString(document.RootElement, ["ignored"], out _),
+        "Null JSON values should not be returned as strings.");
+    Ensure(!JsonSearch.TryFindInt32(null, ["count"], out _),
+        "Null JSON roots should not match values.");
+    return Task.CompletedTask;
+}
+
+static Task ValidatesAccessProfileEdgeCasesAsync()
+{
+    var invalidProfiles = new (string Name, UniFiAccessProfileOptions Profile)[]
+    {
+        ("missing credential mode", new UniFiAccessProfileOptions { Name = "missing-credentials", BaseAddress = new Uri("https://unifi.example.invalid"), AllowedRelativePathPrefixes = ["/v1"] }),
+        ("api key and password", new UniFiAccessProfileOptions { Name = "mixed-credentials", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", ApiKeyEnvironmentVariable = "UNIFI_KEY", AllowedRelativePathPrefixes = ["/v1"] }),
+        ("non-https", CreateProfile("plain-http", "http://unifi.example.invalid", "/v1")),
+        ("embedded credentials", CreateProfile("userinfo", "******unifi.example.invalid", "/v1")),
+        ("bad pin", new UniFiAccessProfileOptions { Name = "bad-pin", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", PinnedServerCertificateSha256 = "not-a-pin", AllowedRelativePathPrefixes = ["/v1"] }),
+        ("blank api key header", new UniFiAccessProfileOptions { Name = "blank-api-header", BaseAddress = new Uri("https://unifi.example.invalid"), ApiKeyEnvironmentVariable = "UNIFI_KEY", ApiKeyHeaderName = " ", AllowedRelativePathPrefixes = ["/v1"] }),
+        ("bad api key prefix", new UniFiAccessProfileOptions { Name = "bad-api-prefix", BaseAddress = new Uri("https://unifi.example.invalid"), ApiKeyEnvironmentVariable = "UNIFI_KEY", ApiKeyValuePrefix = "Bearer!", AllowedRelativePathPrefixes = ["/v1"] }),
+        ("missing login path", new UniFiAccessProfileOptions { Name = "missing-login", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", LoginPath = " ", AllowedRelativePathPrefixes = ["/v1"] }),
+        ("missing path prefix", new UniFiAccessProfileOptions { Name = "missing-prefix", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", AllowedRelativePathPrefixes = [] }),
+        ("unsupported method", new UniFiAccessProfileOptions { Name = "trace", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", AllowedRelativePathPrefixes = ["/v1"], AllowedHttpMethods = ["GET", "TRACE"] }),
+        ("missing get", CreateProfile("missing-get", "https://unifi.example.invalid", "/v1", allowMutations: true, allowedHttpMethods: ["POST"])),
+        ("mutation method without mutations", new UniFiAccessProfileOptions { Name = "post-without-mutations", BaseAddress = new Uri("https://unifi.example.invalid"), Username = "user", Password = "password", AllowedRelativePathPrefixes = ["/v1"], AllowedHttpMethods = ["GET", "POST"] }),
+        ("connector wrong service", CreateProfile("connector-wrong-service", "https://unifi.example.invalid", "/v1", allowConnectorProxy: true, connectorAllowedPathPrefixes: ["/proxy"])),
+        ("connector missing prefixes", new UniFiAccessProfileOptions { Name = "connector-missing-prefix", BaseAddress = new Uri("https://api.ui.com"), ApiKeyEnvironmentVariable = "UNIFI_KEY", Service = UniFiServiceKind.SiteManager, AllowedRelativePathPrefixes = ["/v1"], AllowConnectorProxy = true })
+    };
+
+    foreach (var (name, profile) in invalidProfiles)
+    {
+        _ = AssertThrows<Exception>(() => profile.Validate(variable => variable == "UNIFI_KEY" ? "key" : null), name);
+    }
+
+    var validPin = string.Concat(Enumerable.Repeat("a1", 32));
+    var normalized = new UniFiAccessProfileOptions
+    {
+        Name = "normalizes",
+        BaseAddress = new Uri("https://unifi.example.invalid"),
+        Username = "user",
+        Password = "password",
+        AllowedRelativePathPrefixes = ["v1"],
+        AllowMutations = true,
+        AllowedHttpMethods = [" get ", "POST", "post"],
+        PinnedServerCertificateSha256 = string.Join(':', Enumerable.Repeat("A1", 32))
+    };
+    normalized.Validate();
+    Ensure(normalized.GetNormalizedAllowedPathPrefixes().Single() == "/v1", "Expected path prefixes to be normalized.");
+    Ensure(normalized.GetNormalizedAllowedHttpMethods().SetEquals(["GET", "POST"]), "Expected HTTP methods to be normalized and deduplicated.");
+    Ensure(validPin.Length == 64, "Expected valid certificate pin test data.");
+    return Task.CompletedTask;
+}
+
+static Task ValidatesClientOptionEdgeCasesAsync()
+{
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiApiClientOptions().Validate(), "missing profiles");
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiApiClientOptions
+    {
+        TokenRefreshSkew = TimeSpan.FromSeconds(-1),
+        Profiles = [CreateProfile("network", "https://unifi.example.invalid", "/v1")]
+    }.Validate(), "negative skew");
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiApiClientOptions
+    {
+        Profiles =
+        [
+            CreateProfile("network", "https://unifi.example.invalid", "/v1"),
+            CreateProfile("NETWORK", "https://unifi.example.invalid", "/v1")
+        ]
+    }.Validate(), "duplicate profile names");
+    return Task.CompletedTask;
+}
+
+static async Task RejectsReservedCallerHeadersAsync()
+{
+    var transport = new ScriptedTransport(_ => Responses.Json(new HttpRequestMessage(HttpMethod.Get, "/v1/hosts"), """{"items":[]}"""));
+    using var factory = CreateFactory(
+        [CreateProfile("site-manager", "https://api.ui.com", "/v1", apiKeyEnvironmentVariable: "UNIFI_SITE_MANAGER_API_KEY")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["site-manager"] = transport },
+        name => name == "UNIFI_SITE_MANAGER_API_KEY" ? "test-api-key" : null);
+
+    using var client = factory.Create("site-manager");
+    var exception = await AssertThrowsAsync<InvalidOperationException>(() =>
+        client.SendAsync(UniFiApiRequest.Get("/v1/hosts", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Authorization"] = "******"
+        }))).ConfigureAwait(false);
+
+    Ensure(exception.Message.Contains("reserved", StringComparison.OrdinalIgnoreCase), "Expected reserved header rejection.");
+    Ensure(transport.ApiRequestCount == 0, "Reserved headers must be rejected before transport calls.");
+}
+
+static async Task SurfacesTransportFailuresAsRetryableAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new HttpRequestException("network unavailable"));
+    using var factory = CreateFactory(
+        [CreateProfile("network", "https://controller.example.invalid", "/proxy/network/api/s/site/stat")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["network"] = transport });
+
+    using var client = factory.Create("network");
+    var exception = await AssertThrowsAsync<UniFiClientException>(() =>
+        client.SendAsync(UniFiApiRequest.Get("/proxy/network/api/s/site/stat/device?mac=redacted"))).ConfigureAwait(false);
+
+    Ensure(exception.Retryable, "Transport failures before a response should be retryable.");
+    Ensure(exception.RelativePath == "/proxy/network/api/s/site/stat/device", "Exception paths should omit query strings.");
+    Ensure(exception.InnerException is HttpRequestException, "Expected original transport exception to be preserved.");
+}
+
+static Task ValidatesServerOptionEdgeCasesAsync()
+{
+    var invalidOptions = new (string Name, UnifiMcpServerOptions Options)[]
+    {
+        ("blank name", new UnifiMcpServerOptions { Name = " " }),
+        ("blank version", new UnifiMcpServerOptions { Version = " " }),
+        ("blank protocol", new UnifiMcpServerOptions { ProtocolVersion = " " }),
+        ("collection size", new UnifiMcpServerOptions { MaxCollectionItems = 0 }),
+        ("object size", new UnifiMcpServerOptions { MaxObjectProperties = 0 }),
+        ("string size", new UnifiMcpServerOptions { MaxStringLength = 0 }),
+        ("upstream size", new UnifiMcpServerOptions { MaxUpstreamResponseBytes = 0 }),
+        ("stdio size", new UnifiMcpServerOptions { MaxStdioMessageBytes = 0 }),
+        ("sanitized size", new UnifiMcpServerOptions { MaxSanitizedOutputCharacters = 63 }),
+        ("json depth", new UnifiMcpServerOptions { MaxJsonDepth = 0 }),
+        ("request body size", new UnifiMcpServerOptions { MaxRequestBodyBytes = 0 }),
+        ("approval env", new UnifiMcpServerOptions { MutationApprovalKeyEnvironmentVariable = " " }),
+        ("approval age low", new UnifiMcpServerOptions { MutationApprovalMaxAgeSeconds = 29 }),
+        ("approval age high", new UnifiMcpServerOptions { MutationApprovalMaxAgeSeconds = 3601 }),
+        ("schema size", new UnifiMcpServerOptions { MaxOperationSchemaCharacters = 1023 })
+    };
+
+    foreach (var (name, options) in invalidOptions)
+    {
+        _ = AssertThrows<InvalidOperationException>(options.Validate, name);
+    }
+
+    new UnifiMcpServerOptions().Validate();
+    return Task.CompletedTask;
+}
+
+static Task ValidatesConfigurationEdgeCasesAsync()
+{
+    _ = AssertThrows<InvalidOperationException>(() => new UnifiMcpConfiguration().Validate(), "missing credentials");
+    _ = AssertThrows<InvalidOperationException>(() => new UnifiMcpConfiguration
+    {
+        TokenRefreshSkew = TimeSpan.FromSeconds(-1),
+        Credentials = [new UniFiCredentialOptions { Name = "api", ApiKeyEnvironmentVariable = "UNIFI_KEY" }],
+        Scopes = [new UniFiScopeOptions { Name = "scope", Credential = "api", BaseAddress = new Uri("https://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] }]
+    }.Validate(name => name == "UNIFI_KEY" ? "key" : null), "negative skew");
+    _ = AssertThrows<InvalidOperationException>(() => new UnifiMcpConfiguration
+    {
+        Credentials =
+        [
+            new UniFiCredentialOptions { Name = "api", ApiKeyEnvironmentVariable = "UNIFI_KEY" },
+            new UniFiCredentialOptions { Name = "API", ApiKeyEnvironmentVariable = "UNIFI_KEY" }
+        ],
+        Scopes = [new UniFiScopeOptions { Name = "scope", Credential = "api", BaseAddress = new Uri("https://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] }]
+    }.Validate(name => name == "UNIFI_KEY" ? "key" : null), "duplicate credentials");
+    _ = AssertThrows<InvalidOperationException>(() => new UnifiMcpConfiguration
+    {
+        Credentials = [new UniFiCredentialOptions { Name = "api", ApiKeyEnvironmentVariable = "UNIFI_KEY" }],
+        Scopes =
+        [
+            new UniFiScopeOptions { Name = "scope", Credential = "api", BaseAddress = new Uri("https://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] },
+            new UniFiScopeOptions { Name = "SCOPE", Credential = "api", BaseAddress = new Uri("https://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] }
+        ]
+    }.Validate(name => name == "UNIFI_KEY" ? "key" : null), "duplicate scopes");
+    _ = AssertThrows<InvalidOperationException>(() => new UnifiMcpConfiguration
+    {
+        Credentials = [new UniFiCredentialOptions { Name = "api", ApiKeyEnvironmentVariable = "UNIFI_KEY" }],
+        Scopes = [new UniFiScopeOptions { Name = "scope", Credential = "missing", BaseAddress = new Uri("https://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] }]
+    }.Validate(name => name == "UNIFI_KEY" ? "key" : null), "unknown credential");
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiCredentialOptions { Name = "mixed", ApiKeyEnvironmentVariable = "UNIFI_KEY", Username = "user", Password = "pass" }.Validate(name => name == "UNIFI_KEY" ? "key" : null), "mixed credential mode");
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiCredentialOptions { Name = "missing", Username = "user" }.Validate(), "partial username password");
+    _ = AssertThrows<InvalidOperationException>(() => new UniFiScopeOptions { Name = "plain", Credential = "api", BaseAddress = new Uri("http://api.ui.com"), AllowedRelativePathPrefixes = ["/v1"] }.Validate(), "scope non-https");
+    return Task.CompletedTask;
+}
+
+static Task MapsConfigurationToClientProfilesAsync()
+{
+    var options = ValidConfiguration().ToClientOptions(name => name == "UNIFI_KEY" ? "key" : null);
+    var profile = options.Profiles.Single();
+
+    Ensure(profile.Name == "scope", "Expected scope name to map to profile name.");
+    Ensure(profile.ApiKeyEnvironmentVariable == "UNIFI_KEY", "Expected API key credential to map to profile.");
+    Ensure(profile.ApiKeyHeaderName == "Authorization", "Expected API key header to map to profile.");
+    Ensure(profile.ApiKeyValuePrefix == "Bearer", "Expected API key value prefix to map to profile.");
+    Ensure(profile.Service == UniFiServiceKind.SiteManager, "Expected scope service to map to profile.");
+    Ensure(profile.AllowConnectorProxy, "Expected connector proxy setting to map to profile.");
+    Ensure(profile.GetNormalizedConnectorAllowedPathPrefixes().Single() == "/proxy/network", "Expected connector prefixes to map to profile.");
+    return Task.CompletedTask;
+}
+
+static async Task HandlesStdioCrLfPartialsAndWriteValidationAsync()
+{
+    using var crlfInput = new MemoryStream(Encoding.UTF8.GetBytes("""{"jsonrpc":"2.0","method":"notifications/initialized"}""" + "\r\n"));
+    var crlfMessage = await McpJsonRpcHost.ReadMessageAsync(crlfInput, 1024).ConfigureAwait(false);
+    Ensure(crlfMessage == """{"jsonrpc":"2.0","method":"notifications/initialized"}""", "Expected CRLF line endings to be trimmed.");
+
+    using var partialInput = new MemoryStream(Encoding.UTF8.GetBytes("""{"partial":true}"""));
+    var partialMessage = await McpJsonRpcHost.ReadMessageAsync(partialInput, 1024).ConfigureAwait(false);
+    Ensure(partialMessage == """{"partial":true}""", "Expected EOF-terminated partial messages to be returned.");
+
+    using var emptyInput = new MemoryStream();
+    var emptyMessage = await McpJsonRpcHost.ReadMessageAsync(emptyInput, 1024).ConfigureAwait(false);
+    Ensure(emptyMessage is null, "Expected empty EOF to return null.");
+
+    await AssertThrowsAsync<InvalidOperationException>(() =>
+        McpJsonRpcHost.WriteMessageAsync(new MemoryStream(), "line1\nline2")).ConfigureAwait(false);
+    await AssertThrowsAsync<ArgumentOutOfRangeException>(() =>
+        McpJsonRpcHost.ReadMessageAsync(new MemoryStream(), 0)).ConfigureAwait(false);
+}
+
 static UniFiApiClientFactory CreateFactory(
     IReadOnlyList<UniFiAccessProfileOptions> profiles,
     IReadOnlyDictionary<string, ScriptedTransport> transports,
@@ -1167,6 +1415,51 @@ static UniFiAccessProfileOptions CreateProfile(
         AllowConnectorProxy = allowConnectorProxy,
         ConnectorAllowedPathPrefixes = connectorAllowedPathPrefixes ?? []
     };
+}
+
+static UnifiMcpConfiguration ValidConfiguration()
+{
+    return new UnifiMcpConfiguration
+    {
+        Credentials =
+        [
+            new UniFiCredentialOptions
+            {
+                Name = "api",
+                ApiKeyEnvironmentVariable = "UNIFI_KEY",
+                ApiKeyHeaderName = "Authorization",
+                ApiKeyValuePrefix = "Bearer"
+            }
+        ],
+        Scopes =
+        [
+            new UniFiScopeOptions
+            {
+                Name = "scope",
+                Credential = "api",
+                BaseAddress = new Uri("https://api.ui.com"),
+                Service = UniFiServiceKind.SiteManager,
+                AllowedRelativePathPrefixes = ["/v1"],
+                AllowConnectorProxy = true,
+                ConnectorAllowedPathPrefixes = ["/proxy/network"]
+            }
+        ]
+    };
+}
+
+static TException AssertThrows<TException>(Action action, string description)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException exception)
+    {
+        return exception;
+    }
+
+    throw new InvalidOperationException($"Expected {description} to throw {typeof(TException).Name}.");
 }
 
 static async Task<TException> AssertThrowsAsync<TException>(Func<Task> action)

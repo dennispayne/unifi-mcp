@@ -59,6 +59,9 @@ internal static class ApiOperationCatalog
         {
             "siteManager" => UniFiServiceKind.SiteManager,
             "network" => UniFiServiceKind.Network,
+            "protect" => UniFiServiceKind.Protect,
+            "access" => UniFiServiceKind.Access,
+            "mobility" => UniFiServiceKind.Mobility,
             _ => throw new InvalidOperationException($"Unknown API catalog service '{service}'.")
         };
 

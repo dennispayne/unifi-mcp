@@ -7,7 +7,7 @@ internal static class UniFiPathScopeGuard
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
 
-        if (Uri.TryCreate(relativePath, UriKind.Absolute, out _))
+        if (!relativePath.StartsWith('/') && Uri.TryCreate(relativePath, UriKind.Absolute, out _))
         {
             throw new UniFiClientException(
                 $"UniFi request for profile '{profile.Name}' rejected because absolute URLs are not allowed.",

@@ -40,6 +40,12 @@ var tests = new (string Name, Func<Task> Run)[]
     ("executes concrete Site Manager reads", ExecutesConcreteSiteManagerReadAsync),
     ("bounds numeric sanitizer output", BoundsNumericSanitizerOutputAsync),
     ("enforces concrete tool service type", EnforcesConcreteToolServiceTypeAsync),
+    ("executes concrete Protect reads", ExecutesConcreteProtectReadAsync),
+    ("executes concrete Access reads with bearer keys", ExecutesConcreteAccessReadAsync),
+    ("executes concrete Mobility reads", ExecutesConcreteMobilityReadAsync),
+    ("discovers added service operation schemas", DiscoversAddedServiceOperationSchemasAsync),
+    ("rejects undocumented added service operations", RejectsUndocumentedAddedServiceOperationsAsync),
+    ("requires approval for added service mutations", RequiresApprovalForAddedServiceMutationsAsync),
     ("rejects oversized upstream responses", RejectsOversizedUpstreamResponsesAsync)
 };
 
@@ -381,7 +387,7 @@ static async Task SupportsInitializeAndToolsListAsync()
 
     using var toolsDocument = JsonDocument.Parse(toolsResponse!);
     var tools = toolsDocument.RootElement.GetProperty("result").GetProperty("tools");
-    Ensure(tools.GetArrayLength() == 17, $"Expected seventeen tools, got {tools.GetArrayLength()}.");
+    Ensure(tools.GetArrayLength() == 25, $"Expected twenty-five tools, got {tools.GetArrayLength()}.");
 }
 
 static async Task ListsFullOfficialApiCatalogAsync()
@@ -399,7 +405,7 @@ static async Task ListsFullOfficialApiCatalogAsync()
 
     using var document = JsonDocument.Parse(response!);
     var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
-    Ensure(structured.GetProperty("totalCount").GetInt32() == 87, "Expected all 87 official API operations.");
+    Ensure(structured.GetProperty("totalCount").GetInt32() == 275, "Expected all 275 official API operations.");
     Ensure(structured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("mutating").GetBoolean()),
         "Expected mutation operations in the official API catalog.");
 }
@@ -939,6 +945,184 @@ static async Task RejectsOversizedUpstreamResponsesAsync()
         "Expected an oversized upstream response tool error.");
 }
 
+static async Task ExecutesConcreteProtectReadAsync()
+{
+    var transport = new ScriptedTransport(request =>
+    {
+        Ensure(request.Method == HttpMethod.Get, "Concrete Protect tools must issue GET requests only.");
+        Ensure(RequestPathHelper.GetPath(request) == "/v1/cameras", "Unexpected Protect path.");
+        return Responses.Json(request, """{"data":[{"id":"cam-1","name":"Front","mac":"aa:bb:cc:dd:ee:ff"}]}""");
+    });
+
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "protect",
+            "https://console.example.invalid/proxy/protect/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_PROTECT_API_KEY",
+            service: UniFiServiceKind.Protect)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["protect"] = transport },
+        name => name == "UNIFI_PROTECT_API_KEY" ? "protect-key" : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"unifi.protect.cameras.list","arguments":{"scope":"protect"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
+    Ensure(structured.GetProperty("data").GetProperty("data")[0].GetProperty("mac").GetString() == "[redacted]",
+        "Expected Protect MAC identifiers to be redacted.");
+    Ensure(transport.ApiKeyHeaders.Contains("protect-key", StringComparer.Ordinal),
+        "Expected the Protect API key header to be sent.");
+}
+
+static async Task ExecutesConcreteAccessReadAsync()
+{
+    var transport = new ScriptedTransport(request =>
+    {
+        Ensure(RequestPathHelper.GetPath(request) == "/api/v1/developer/doors", "Unexpected Access path.");
+        return Responses.Json(request, """{"code":"SUCCESS","data":[{"id":"door-1","name":"Lobby"}]}""");
+    });
+
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "access",
+            "https://console.example.invalid:12445",
+            "/api/v1/developer",
+            apiKeyEnvironmentVariable: "UNIFI_ACCESS_API_TOKEN",
+            apiKeyHeaderName: "Authorization",
+            apiKeyValuePrefix: "Bearer",
+            service: UniFiServiceKind.Access)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["access"] = transport },
+        name => name == "UNIFI_ACCESS_API_TOKEN" ? "access-token" : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"unifi.access.doors.list","arguments":{"scope":"access"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(!document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Access reads must succeed.");
+    Ensure(transport.AuthorizationHeaders.Contains("Bearer " + "access-token", StringComparer.Ordinal),
+        "Expected the Access bearer token header to be sent.");
+}
+
+static async Task ExecutesConcreteMobilityReadAsync()
+{
+    const string WorkspaceId = "8b1f0d02-95a0-4a35-9a52-7f0c6c2d1f11";
+    var transport = new ScriptedTransport(request =>
+    {
+        Ensure(
+            RequestPathHelper.GetPath(request) == $"/v1/mobility/workspaces/{WorkspaceId}/devices?limit=5&offset=0",
+            $"Unexpected Mobility path '{RequestPathHelper.GetPath(request)}'.");
+        return Responses.Json(request, """{"data":[{"id":"device-1"}],"total":1}""");
+    });
+
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "mobility",
+            "https://api.ui.com",
+            "/v1/mobility",
+            apiKeyEnvironmentVariable: "UNIFI_MOBILITY_API_KEY",
+            service: UniFiServiceKind.Mobility)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["mobility"] = transport },
+        name => name == "UNIFI_MOBILITY_API_KEY" ? "mobility-key" : null);
+
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        "{\"jsonrpc\":\"2.0\",\"id\":62,\"method\":\"tools/call\",\"params\":{\"name\":\"unifi.mobility.devices.list\",\"arguments\":{\"scope\":\"mobility\",\"workspaceId\":\"" + WorkspaceId + "\",\"limit\":5}}}")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(!document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Mobility reads must succeed.");
+}
+
+static async Task DiscoversAddedServiceOperationSchemasAsync()
+{
+    using var factory = CreateFactory(
+        [CreateProfile("site-a", "https://controller-a.example.invalid", "/v1")],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["site-a"] = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."))
+        });
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+
+    foreach (var (service, operationId, expectedMethod) in new[]
+             {
+                 ("protect", "patchCamerasById", "PATCH"),
+                 ("access", "fetchAllDoors", "GET"),
+                 ("mobility", "listWorkspaces", "GET")
+             })
+    {
+        var response = await host.HandleJsonRpcAsync(
+            "{\"jsonrpc\":\"2.0\",\"id\":63,\"method\":\"tools/call\",\"params\":{\"name\":\"unifi.api.operation.get\",\"arguments\":{\"service\":\"" + service + "\",\"operationId\":\"" + operationId + "\"}}}")
+            .ConfigureAwait(false);
+
+        using var document = JsonDocument.Parse(response!);
+        var structured = document.RootElement.GetProperty("result").GetProperty("structuredContent");
+        Ensure(structured.GetProperty("method").GetString() == expectedMethod,
+            $"Expected {operationId} to resolve to {expectedMethod}.");
+    }
+
+    var listResponse = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"unifi.api.operations.list","arguments":{"service":"protect","limit":1}}}""")
+        .ConfigureAwait(false);
+    using var listDocument = JsonDocument.Parse(listResponse!);
+    Ensure(listDocument.RootElement.GetProperty("result").GetProperty("structuredContent")
+        .GetProperty("totalCount").GetInt32() > 0, "Expected Protect operations to be discoverable by service.");
+}
+
+static async Task RejectsUndocumentedAddedServiceOperationsAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "protect",
+            "https://console.example.invalid/proxy/protect/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_PROTECT_API_KEY",
+            service: UniFiServiceKind.Protect)],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["protect"] = transport },
+        name => name == "UNIFI_PROTECT_API_KEY" ? "protect-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":65,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"protect","method":"GET","path":"/v1/undocumented"}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Undocumented Protect operations must be rejected.");
+    Ensure(transport.ApiRequestCount == 0, "Undocumented Protect operation must not reach transport.");
+}
+
+static async Task RequiresApprovalForAddedServiceMutationsAsync()
+{
+    var transport = new ScriptedTransport(_ => throw new InvalidOperationException("Transport should not be called."));
+    using var factory = CreateFactory(
+        [CreateProfile(
+            "protect",
+            "https://console.example.invalid/proxy/protect/integration",
+            "/v1",
+            apiKeyEnvironmentVariable: "UNIFI_PROTECT_API_KEY",
+            service: UniFiServiceKind.Protect,
+            allowMutations: true,
+            allowedHttpMethods: ["GET", "PATCH"])],
+        new Dictionary<string, ScriptedTransport>(StringComparer.OrdinalIgnoreCase) { ["protect"] = transport },
+        name => name == "UNIFI_PROTECT_API_KEY" ? "protect-key" : null);
+    var host = new McpJsonRpcHost(new UnifiMcpServer(factory));
+    var response = await host.HandleJsonRpcAsync(
+        """{"jsonrpc":"2.0","id":66,"method":"tools/call","params":{"name":"unifi.api.request","arguments":{"scope":"protect","method":"PATCH","path":"/v1/cameras/cam-1","body":{"name":"Front"}}}}""")
+        .ConfigureAwait(false);
+
+    using var document = JsonDocument.Parse(response!);
+    Ensure(document.RootElement.GetProperty("result").GetProperty("isError").GetBoolean(),
+        "Protect mutations without approval must fail.");
+    Ensure(transport.ApiRequestCount == 0, "Unapproved Protect mutation must not reach transport.");
+}
+
 static UniFiApiClientFactory CreateFactory(
     IReadOnlyList<UniFiAccessProfileOptions> profiles,
     IReadOnlyDictionary<string, ScriptedTransport> transports,
@@ -960,6 +1144,7 @@ static UniFiAccessProfileOptions CreateProfile(
     string password = "password",
     string? apiKeyEnvironmentVariable = null,
     string apiKeyHeaderName = "X-API-KEY",
+    string? apiKeyValuePrefix = null,
     UniFiServiceKind service = UniFiServiceKind.Generic,
     bool allowMutations = false,
     IReadOnlyList<string>? allowedHttpMethods = null,
@@ -975,6 +1160,7 @@ static UniFiAccessProfileOptions CreateProfile(
         Password = apiKeyEnvironmentVariable is null ? password : null,
         ApiKeyEnvironmentVariable = apiKeyEnvironmentVariable,
         ApiKeyHeaderName = apiKeyHeaderName,
+        ApiKeyValuePrefix = apiKeyValuePrefix,
         AllowedRelativePathPrefixes = [allowedPrefix],
         AllowMutations = allowMutations,
         AllowedHttpMethods = allowedHttpMethods ?? ["GET"],
@@ -1047,6 +1233,8 @@ internal sealed class ScriptedTransport : IUniFiTransport
 
     public List<string> ApiKeyHeaders { get; } = [];
 
+    public List<string> AuthorizationHeaders { get; } = [];
+
     public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken = default)
     {
         var path = RequestPathHelper.GetPath(request);
@@ -1060,6 +1248,11 @@ internal sealed class ScriptedTransport : IUniFiTransport
             if (request.Headers.TryGetValues("X-API-KEY", out var apiKeyValues))
             {
                 ApiKeyHeaders.Add(apiKeyValues.Single());
+            }
+
+            if (request.Headers.TryGetValues("Authorization", out var authorizationValues))
+            {
+                AuthorizationHeaders.Add(authorizationValues.Single());
             }
 
             if (request.Headers.TryGetValues("Cookie", out var cookieValues))

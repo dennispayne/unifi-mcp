@@ -98,6 +98,8 @@ public sealed class UniFiCredentialOptions
 
     public string ApiKeyHeaderName { get; init; } = "X-API-KEY";
 
+    public string? ApiKeyValuePrefix { get; init; }
+
     public void Validate(Func<string, string?>? environmentVariableReader = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Name);
@@ -275,6 +277,7 @@ public sealed class UniFiScopeOptions
             PasswordEnvironmentVariable = credential.PasswordEnvironmentVariable,
             ApiKeyEnvironmentVariable = credential.ApiKeyEnvironmentVariable,
             ApiKeyHeaderName = credential.ApiKeyHeaderName,
+            ApiKeyValuePrefix = credential.ApiKeyValuePrefix,
             LoginPath = LoginPath,
             ScopeDescription = ScopeDescription,
             SessionTtl = SessionTtl,

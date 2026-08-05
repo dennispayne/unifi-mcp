@@ -27,6 +27,22 @@
       "name": "network-key",
       "apiKeyEnvironmentVariable": "UNIFI_NETWORK_API_KEY",
       "apiKeyHeaderName": "X-API-KEY"
+    },
+    {
+      "name": "protect-key",
+      "apiKeyEnvironmentVariable": "UNIFI_PROTECT_API_KEY",
+      "apiKeyHeaderName": "X-API-KEY"
+    },
+    {
+      "name": "access-token",
+      "apiKeyEnvironmentVariable": "UNIFI_ACCESS_API_TOKEN",
+      "apiKeyHeaderName": "Authorization",
+      "apiKeyValuePrefix": "Bearer"
+    },
+    {
+      "name": "mobility-key",
+      "apiKeyEnvironmentVariable": "UNIFI_MOBILITY_API_KEY",
+      "apiKeyHeaderName": "X-API-KEY"
     }
   ],
   "scopes": [
@@ -70,6 +86,51 @@
       ],
       "allowedRelativePathPrefixes": [
         "/v1"
+      ]
+    },
+    {
+      "name": "protect",
+      "baseAddress": "https://unifi/proxy/protect/integration",
+      "service": "protect",
+      "credential": "protect-key",
+      "scopeDescription": "UniFi Protect device inventory reads.",
+      "sessionTtl": "00:55:00",
+      "allowMutations": false,
+      "allowedHttpMethods": [
+        "GET"
+      ],
+      "allowedRelativePathPrefixes": [
+        "/v1"
+      ]
+    },
+    {
+      "name": "access",
+      "baseAddress": "https://unifi:12445",
+      "service": "access",
+      "credential": "access-token",
+      "scopeDescription": "UniFi Access door and device reads.",
+      "sessionTtl": "00:55:00",
+      "allowMutations": false,
+      "allowedHttpMethods": [
+        "GET"
+      ],
+      "allowedRelativePathPrefixes": [
+        "/api/v1/developer"
+      ]
+    },
+    {
+      "name": "mobility",
+      "baseAddress": "https://api.ui.com",
+      "service": "mobility",
+      "credential": "mobility-key",
+      "scopeDescription": "UniFi Mobility workspace and device reads.",
+      "sessionTtl": "00:55:00",
+      "allowMutations": false,
+      "allowedHttpMethods": [
+        "GET"
+      ],
+      "allowedRelativePathPrefixes": [
+        "/v1/mobility"
       ]
     }
   ]

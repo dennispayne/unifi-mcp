@@ -21,13 +21,14 @@ public sealed class UniFiApiKeyAuthenticator : IUniFiAuthenticator
 
         var apiKey = profile.ResolveApiKey(_environmentVariableReader);
         var headerName = string.IsNullOrWhiteSpace(profile.ApiKeyHeaderName) ? "X-API-KEY" : profile.ApiKeyHeaderName.Trim();
+        var prefix = string.IsNullOrWhiteSpace(profile.ApiKeyValuePrefix) ? string.Empty : profile.ApiKeyValuePrefix.Trim() + " ";
 
         return Task.FromResult(new UniFiSessionToken
         {
             ExpiresAt = _timeProvider.GetUtcNow().Add(profile.SessionTtl),
             Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                [headerName] = apiKey.Reveal()
+                [headerName] = prefix + apiKey.Reveal()
             }
         });
     }

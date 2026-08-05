@@ -11,11 +11,14 @@ public sealed class UnifiMcpServer
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static readonly string[] ServiceNames = ["siteManager", "network", "protect", "access", "mobility"];
+
     private static readonly string[] DescribeScopeRequiredProperties = ["scope"];
     private static readonly string[] ReadRequiredProperties = ["scope", "path"];
     private static readonly string[] ApiRequestRequiredProperties = ["scope", "method", "path"];
     private static readonly string[] SiteIdRequiredProperties = ["scope", "siteId"];
     private static readonly string[] DeviceStatisticsRequiredProperties = ["scope", "siteId", "deviceId"];
+    private static readonly string[] WorkspaceIdRequiredProperties = ["scope", "workspaceId"];
 
     private static readonly IReadOnlyList<McpToolDescriptor> Tools =
     [
@@ -58,13 +61,13 @@ public sealed class UnifiMcpServer
             }),
         BuildTool(
             "unifi.api.operations.list",
-            "Discover official Site Manager and Network API operations, including mutation requirements.",
+            "Discover official Site Manager, Network, Protect, Access, and Mobility API operations, including mutation requirements.",
             new
             {
                 type = "object",
                 properties = new
                 {
-                    service = new { type = "string", @enum = new[] { "siteManager", "network" } },
+                    service = new { type = "string", @enum = ServiceNames },
                     method = new { type = "string", @enum = new[] { "GET", "POST", "PUT", "PATCH", "DELETE" } },
                     search = new { type = "string", description = "Optional path, operation ID, summary, or tag search." },
                     offset = new { type = "integer", minimum = 0, @default = 0 },
@@ -80,7 +83,7 @@ public sealed class UnifiMcpServer
                 type = "object",
                 properties = new
                 {
-                    service = new { type = "string", @enum = new[] { "siteManager", "network" } },
+                    service = new { type = "string", @enum = ServiceNames },
                     operationId = new { type = "string" }
                 },
                 required = new[] { "service", "operationId" },
@@ -157,6 +160,50 @@ public sealed class UnifiMcpServer
                     deviceId = new { type = "string", format = "uuid" }
                 },
                 required = DeviceStatisticsRequiredProperties,
+                additionalProperties = false
+            }),
+        BuildTool(
+            "unifi.protect.info.get",
+            "Get the UniFi Protect application information for a Protect scope. Read-only.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.protect.cameras.list",
+            "List UniFi Protect cameras. Read-only and identifier-redacted.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.protect.sensors.list",
+            "List UniFi Protect sensors. Read-only and identifier-redacted.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.protect.nvrs.get",
+            "Get UniFi Protect NVR details. Read-only and identifier-redacted.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.access.doors.list",
+            "List UniFi Access doors. Read-only and identifier-redacted.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.access.devices.list",
+            "List UniFi Access devices. Read-only and identifier-redacted.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.mobility.workspaces.list",
+            "List UniFi Mobility workspaces. Read-only.",
+            BuildScopeOnlySchema()),
+        BuildTool(
+            "unifi.mobility.devices.list",
+            "List UniFi Mobility devices for one workspace. Read-only and paginated.",
+            new
+            {
+                type = "object",
+                properties = new
+                {
+                    scope = new { type = "string", description = "Configured Mobility scope name." },
+                    workspaceId = new { type = "string", format = "uuid" },
+                    offset = new { type = "integer", minimum = 0, @default = 0 },
+                    limit = new { type = "integer", minimum = 1, maximum = 25, @default = 25 }
+                },
+                required = WorkspaceIdRequiredProperties,
                 additionalProperties = false
             })
     ];
@@ -259,6 +306,14 @@ public sealed class UnifiMcpServer
             "unifi.network.networks.list" => await ExecuteToolAsync(() => ReadNetworkCollectionAsync(arguments, "/v1/sites/{siteId}/networks", requireSiteId: true, cancellationToken)).ConfigureAwait(false),
             "unifi.network.wifi.list" => await ExecuteToolAsync(() => ReadNetworkCollectionAsync(arguments, "/v1/sites/{siteId}/wifi/broadcasts", requireSiteId: true, cancellationToken)).ConfigureAwait(false),
             "unifi.network.device.statistics.get" => await ExecuteToolAsync(() => ReadNetworkDeviceStatisticsAsync(arguments, cancellationToken)).ConfigureAwait(false),
+            "unifi.protect.info.get" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Protect, "/v1/meta/info", cancellationToken)).ConfigureAwait(false),
+            "unifi.protect.cameras.list" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Protect, "/v1/cameras", cancellationToken)).ConfigureAwait(false),
+            "unifi.protect.sensors.list" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Protect, "/v1/sensors", cancellationToken)).ConfigureAwait(false),
+            "unifi.protect.nvrs.get" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Protect, "/v1/nvrs", cancellationToken)).ConfigureAwait(false),
+            "unifi.access.doors.list" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Access, "/api/v1/developer/doors", cancellationToken)).ConfigureAwait(false),
+            "unifi.access.devices.list" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Access, "/api/v1/developer/devices", cancellationToken)).ConfigureAwait(false),
+            "unifi.mobility.workspaces.list" => await ExecuteToolAsync(() => ReadServiceEndpointAsync(arguments, UniFiServiceKind.Mobility, "/v1/mobility/workspaces", cancellationToken)).ConfigureAwait(false),
+            "unifi.mobility.devices.list" => await ExecuteToolAsync(() => ReadMobilityDevicesAsync(arguments, cancellationToken)).ConfigureAwait(false),
             _ => throw new InvalidOperationException($"Unknown UniFi tool '{name}'.")
         };
     }
@@ -267,12 +322,7 @@ public sealed class UnifiMcpServer
     {
         cancellationToken.ThrowIfCancellationRequested();
         var values = RequireArguments(arguments);
-        var service = ReadRequiredString(values, "service") switch
-        {
-            "siteManager" => UniFiServiceKind.SiteManager,
-            "network" => UniFiServiceKind.Network,
-            _ => throw new InvalidOperationException("Parameter 'service' must be 'siteManager' or 'network'.")
-        };
+        var service = ParseServiceKind(ReadRequiredString(values, "service"));
         var operationId = ReadRequiredString(values, "operationId");
         if (operationId.Length > 256)
         {
@@ -348,12 +398,7 @@ public sealed class UnifiMcpServer
         var operations = ApiOperationCatalog.GetAll().AsEnumerable();
         if (!string.IsNullOrWhiteSpace(service))
         {
-            var serviceKind = service switch
-            {
-                "siteManager" => UniFiServiceKind.SiteManager,
-                "network" => UniFiServiceKind.Network,
-                _ => throw new InvalidOperationException("Parameter 'service' must be 'siteManager' or 'network'.")
-            };
+            var serviceKind = ParseServiceKind(service);
             operations = operations.Where(operation => operation.Service == serviceKind);
         }
 
@@ -636,6 +681,39 @@ public sealed class UnifiMcpServer
         return await ReadEndpointAsync(client, path, includeRaw: false, cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<McpCallToolResult> ReadServiceEndpointAsync(
+        JsonElement? arguments,
+        UniFiServiceKind service,
+        string endpoint,
+        CancellationToken cancellationToken)
+    {
+        var values = RequireArguments(arguments);
+        var client = GetServiceClient(values, service);
+        return await ReadEndpointAsync(client, endpoint, includeRaw: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<McpCallToolResult> ReadMobilityDevicesAsync(
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var values = RequireArguments(arguments);
+        var client = GetServiceClient(values, UniFiServiceKind.Mobility);
+        var workspaceId = ReadUuid(values, "workspaceId");
+        var limit = ReadBoundedInteger(values, "limit", _options.MaxCollectionItems, 1, Math.Min(200, _options.MaxCollectionItems));
+        var offset = ReadBoundedInteger(values, "offset", 0, 0, int.MaxValue);
+        var query = new List<KeyValuePair<string, string>>
+        {
+            new("limit", limit.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("offset", offset.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        };
+
+        return await ReadEndpointAsync(
+            client,
+            BuildPath($"/v1/mobility/workspaces/{workspaceId}/devices", query),
+            includeRaw: false,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<McpCallToolResult> ReadEndpointAsync(
         IUniFiApiClient client,
         string path,
@@ -770,6 +848,18 @@ public sealed class UnifiMcpServer
 
         return parsed.ToString("D");
     }
+
+    private static UniFiServiceKind ParseServiceKind(string service) =>
+        service switch
+        {
+            "siteManager" => UniFiServiceKind.SiteManager,
+            "network" => UniFiServiceKind.Network,
+            "protect" => UniFiServiceKind.Protect,
+            "access" => UniFiServiceKind.Access,
+            "mobility" => UniFiServiceKind.Mobility,
+            _ => throw new InvalidOperationException(
+                $"Parameter 'service' must be one of: {string.Join(", ", ServiceNames)}.")
+        };
 
     private static HttpMethod ParseHttpMethod(string method) =>
         method.Trim().ToUpperInvariant() switch

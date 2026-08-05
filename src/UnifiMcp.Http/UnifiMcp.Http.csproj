@@ -12,4 +12,10 @@
     <ProjectReference Include="..\Unifi.Mcp.Client\Unifi.Mcp.Client.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>UnifiMcp.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

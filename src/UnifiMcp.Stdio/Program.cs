@@ -67,14 +67,14 @@ internal static class Program
         await Console.Out.WriteLineAsync(token).ConfigureAwait(false);
     }
 
-    private static bool HasArgument(IReadOnlyList<string> args, string name) =>
+    internal static bool HasArgument(IReadOnlyList<string> args, string name) =>
         args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
 
-    private static string ReadRequiredArgument(IReadOnlyList<string> args, string name) =>
+    internal static string ReadRequiredArgument(IReadOnlyList<string> args, string name) =>
         ReadOptionalArgument(args, name)
         ?? throw new InvalidOperationException($"Argument '{name}' is required.");
 
-    private static string? ReadOptionalArgument(IReadOnlyList<string> args, string name)
+    internal static string? ReadOptionalArgument(IReadOnlyList<string> args, string name)
     {
         for (var index = 0; index < args.Count; index++)
         {
@@ -93,7 +93,7 @@ internal static class Program
         return null;
     }
 
-    private static string? ReadConfigPathArgument(IReadOnlyList<string> args)
+    internal static string? ReadConfigPathArgument(IReadOnlyList<string> args)
     {
         for (var index = 0; index < args.Count; index++)
         {

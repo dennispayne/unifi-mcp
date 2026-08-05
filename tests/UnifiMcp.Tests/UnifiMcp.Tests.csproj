@@ -3,6 +3,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\UnifiMcp.Core\UnifiMcp.Core.csproj" />
     <ProjectReference Include="..\..\src\Unifi.Mcp.Client\Unifi.Mcp.Client.csproj" />
+    <ProjectReference Include="..\..\src\UnifiMcp.Http\UnifiMcp.Http.csproj" />
+    <ProjectReference Include="..\..\src\UnifiMcp.Stdio\UnifiMcp.Stdio.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -141,7 +141,7 @@ internal static class Program
         }
     }
 
-    private static bool IsAuthorized(HttpRequest request, string? expectedToken)
+    internal static bool IsAuthorized(HttpRequest request, string? expectedToken)
     {
         if (string.IsNullOrWhiteSpace(expectedToken))
         {
@@ -167,7 +167,7 @@ internal static class Program
                CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
     }
 
-    private static bool IsOriginAllowed(HttpRequest request, IReadOnlySet<string> allowedOrigins)
+    internal static bool IsOriginAllowed(HttpRequest request, IReadOnlySet<string> allowedOrigins)
     {
         if (!request.Headers.TryGetValue("Origin", out var originValues))
         {
@@ -183,11 +183,11 @@ internal static class Program
         return IsLoopbackHost(originUri.Host) || allowedOrigins.Contains(origin);
     }
 
-    private static bool IsJsonContentType(string? contentType) =>
+    internal static bool IsJsonContentType(string? contentType) =>
         !string.IsNullOrWhiteSpace(contentType) &&
         contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase);
 
-    private static bool AcceptsJson(HttpRequest request)
+    internal static bool AcceptsJson(HttpRequest request)
     {
         if (!request.Headers.TryGetValue("Accept", out var acceptValues))
         {
@@ -199,7 +199,7 @@ internal static class Program
                accept.Contains("*/*", StringComparison.Ordinal);
     }
 
-    private static HashSet<string> ParseAllowedOrigins(string? configuredOrigins)
+    internal static HashSet<string> ParseAllowedOrigins(string? configuredOrigins)
     {
         var origins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(configuredOrigins))
@@ -221,7 +221,7 @@ internal static class Program
         return origins;
     }
 
-    private static void EnsureRemoteBindingsRequireAuthentication(string configuredUrls, string? authToken)
+    internal static void EnsureRemoteBindingsRequireAuthentication(string configuredUrls, string? authToken)
     {
         var hasRemoteBinding = configuredUrls
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -233,7 +233,7 @@ internal static class Program
         }
     }
 
-    private static bool IsRemoteBinding(string value)
+    internal static bool IsRemoteBinding(string value)
     {
         var authorityStart = value.IndexOf("://", StringComparison.Ordinal);
         if (authorityStart >= 0)
@@ -255,11 +255,11 @@ internal static class Program
         return !IsLoopbackHost(uri.Host);
     }
 
-    private static bool IsLoopbackHost(string host) =>
+    internal static bool IsLoopbackHost(string host) =>
         string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
         System.Net.IPAddress.TryParse(host, out var address) && System.Net.IPAddress.IsLoopback(address);
 
-    private static string? ReadConfigPathArgument(IReadOnlyList<string> args)
+    internal static string? ReadConfigPathArgument(IReadOnlyList<string> args)
     {
         for (var index = 0; index < args.Count; index++)
         {

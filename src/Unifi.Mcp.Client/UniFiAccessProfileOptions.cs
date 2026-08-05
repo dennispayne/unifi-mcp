@@ -7,7 +7,10 @@ public enum UniFiServiceKind
 {
     Generic,
     SiteManager,
-    Network
+    Network,
+    Protect,
+    Access,
+    Mobility
 }
 
 public sealed class UniFiAccessProfileOptions
@@ -38,6 +41,8 @@ public sealed class UniFiAccessProfileOptions
     public string? ApiKeyEnvironmentVariable { get; init; }
 
     public string ApiKeyHeaderName { get; init; } = "X-API-KEY";
+
+    public string? ApiKeyValuePrefix { get; init; }
 
     public string? LoginPath { get; init; } = "/api/auth/login";
 
@@ -183,6 +188,14 @@ public sealed class UniFiAccessProfileOptions
             if (string.IsNullOrWhiteSpace(ApiKeyHeaderName))
             {
                 throw new InvalidOperationException($"Profile '{Name}' must configure an API key header name.");
+            }
+
+            if (ApiKeyValuePrefix is not null &&
+                (ApiKeyValuePrefix.Trim().Length == 0 ||
+                 ApiKeyValuePrefix.Trim().Any(static character => !char.IsAsciiLetterOrDigit(character) && character is not '-')))
+            {
+                throw new InvalidOperationException(
+                    $"Profile '{Name}' must configure an alphanumeric API key value prefix such as 'Bearer'.");
             }
 
             _ = ResolveApiKey(environmentVariableReader);

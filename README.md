@@ -9,18 +9,18 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/dennispayne/unifi-mcp" alt="MIT license"></a>
 </p>
 
-**unifi-mcp** connects MCP-compatible AI clients to UniFi Site Manager and
-UniFi Network through a security-focused, scope-aware proxy. It supports
-read-only workflows and explicitly approved mutations without exposing API
-keys to the model.
+**unifi-mcp** connects MCP-compatible AI clients to UniFi Site Manager,
+UniFi Network, UniFi Protect, UniFi Access, and UniFi Mobility through a
+security-focused, scope-aware proxy. It supports read-only workflows and
+explicitly approved mutations without exposing API keys to the model.
 
 > This is an independent community project and is not affiliated with or
 > endorsed by Ubiquiti Inc.
 
 ## Highlights
 
-- **Complete documented API surface:** 87 operations across Site Manager and
-  UniFi Network.
+- **Complete documented API surface:** 275 operations across Site Manager,
+  UniFi Network, UniFi Protect, UniFi Access, and UniFi Mobility.
 - **Any number of scopes:** connect multiple consoles, sites, or credentials
   through one server.
 - **Two transports:** self-contained stdio and HTTP executables.
@@ -94,7 +94,15 @@ Add the packaged stdio host to `%USERPROFILE%\.copilot\mcp-config.json`:
         "unifi.network.clients.list",
         "unifi.network.networks.list",
         "unifi.network.wifi.list",
-        "unifi.network.device.statistics.get"
+        "unifi.network.device.statistics.get",
+        "unifi.protect.info.get",
+        "unifi.protect.cameras.list",
+        "unifi.protect.sensors.list",
+        "unifi.protect.nvrs.get",
+        "unifi.access.doors.list",
+        "unifi.access.devices.list",
+        "unifi.mobility.workspaces.list",
+        "unifi.mobility.devices.list"
       ]
     }
   }
@@ -107,7 +115,8 @@ Restart the client or reload MCP servers after saving the file.
 
 Configuration separates reusable credentials from access scopes:
 
-- A **credential** names an environment variable and API-key header.
+- A **credential** names an environment variable, API-key header, and an
+  optional header value prefix such as `Bearer` for UniFi Access tokens.
 - A **scope** selects a credential, service, base address, path boundary,
   allowed methods, mutation policy, and TLS settings.
 
@@ -123,9 +132,14 @@ requests. Three generic tools expose the remaining official API surface:
 - `unifi.api.operation.get`
 - `unifi.api.request`
 
-The embedded catalog includes 14 Site Manager v1.0.0 operations and 73
-Network v10.4.57 operations. See [API coverage](docs/api-coverage.md) for
-details.
+The embedded catalog includes 14 Site Manager v1.0.0, 73 Network v10.4.57,
+73 Protect v7.1.87, 107 Access v4.0.10, and 8 Mobility v1.0.0 operations.
+See [API coverage](docs/api-coverage.md) for per-service base paths,
+authentication headers, and permission requirements.
+
+UniFi Talk and UniFi Connect have no official public REST API and are not
+included. UniFi Identity operations are published inside the UniFi Access
+contract and are reachable through the `access` service.
 
 ## Mutations
 

@@ -33,6 +33,9 @@ flowchart LR
     ApiClient["UniFi API client<br/>auth, TLS, URI guard"]
     SiteManager["UniFi Site Manager API"]
     Network["UniFi Network API"]
+    Protect["UniFi Protect API"]
+    Access["UniFi Access API"]
+    Mobility["UniFi Mobility API"]
 
     Client --> Stdio
     Client --> Http
@@ -44,8 +47,14 @@ flowchart LR
     Tools --> ApiClient
     ApiClient --> SiteManager
     ApiClient --> Network
+    ApiClient --> Protect
+    ApiClient --> Access
+    ApiClient --> Mobility
     SiteManager --> ApiClient
     Network --> ApiClient
+    Protect --> ApiClient
+    Access --> ApiClient
+    Mobility --> ApiClient
     ApiClient --> Sanitize
     Sanitize --> Client
 ```
@@ -93,7 +102,7 @@ Both transports use the same `McpJsonRpcHost` and `UnifiMcpServer`.
 
 - Each profile combines a fixed base address, service kind, relative-path allowlist, HTTP-method allowlist, and explicit mutation setting.
 - Non-GET MCP calls require scope-level mutation enablement plus a one-time HMAC approval token generated outside the MCP and bound to the exact request.
-- An embedded catalog describes all 87 operations in the official Site Manager v1.0.0 and Network v10.4.57 contracts.
+- An embedded catalog describes all 275 operations in the Site Manager v1.0.0, Network v10.4.57, Protect v7.1.87, Access v4.0.10, and Mobility v1.0.0 contracts.
 - Response bodies are streamed through a byte cap before centralized JSON sanitization.
 - Sanitization removes secrets and common device/network identifiers and enforces collection, property, string, aggregate-output, and recursion-depth budgets.
 - A configured SHA-256 certificate pin is always compared exactly; no TLS bypass is available.
@@ -102,5 +111,6 @@ Both transports use the same `McpJsonRpcHost` and `UnifiMcpServer`.
 
 Credentials name an environment-variable source. Scopes independently define
 the service, base address, allowed paths, allowed methods, mutation policy,
-and optional TLS pin. This supports any number of UniFi access paths without
+and optional TLS pin. Because each scope names exactly one service, the
+service selection also determines which embedded contract gates the request. This supports any number of UniFi access paths without
 copying secret values into configuration.

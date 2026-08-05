@@ -64,7 +64,10 @@ internal static class ApiContractCatalog
         new Dictionary<UniFiServiceKind, JsonObject>
         {
             [UniFiServiceKind.SiteManager] = LoadResource("site-manager-openapi.json"),
-            [UniFiServiceKind.Network] = LoadResource("network-openapi.json")
+            [UniFiServiceKind.Network] = LoadResource("network-openapi.json"),
+            [UniFiServiceKind.Protect] = LoadResource("protect-openapi.json"),
+            [UniFiServiceKind.Access] = LoadResource("access-openapi.json"),
+            [UniFiServiceKind.Mobility] = LoadResource("mobility-openapi.json")
         };
 
     private static JsonObject LoadResource(string suffix)

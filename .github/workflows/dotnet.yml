@@ -59,9 +59,9 @@ jobs:
         if: always() && hashFiles('artifacts/coverage/coverage.cobertura.xml') != ''
         shell: pwsh
         run: |
-          reportgenerator
-          -reports:artifacts/coverage/coverage.cobertura.xml
-          -targetdir:artifacts/coverage/html
+          reportgenerator `
+          -reports:artifacts/coverage/coverage.cobertura.xml `
+          -targetdir:artifacts/coverage/html `
           '-reporttypes:HtmlInline_AzurePipelines;Cobertura;MarkdownSummaryGithub'
           if (Test-Path artifacts/coverage/html/SummaryGithub.md) {
             Get-Content artifacts/coverage/html/SummaryGithub.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

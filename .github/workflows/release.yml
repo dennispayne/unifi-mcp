@@ -130,8 +130,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          prerelease_flag=()
+          if [[ '${{ github.ref_name }}' == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
           gh release create '${{ github.ref_name }}' \
             artifacts/*.zip artifacts/*.tar.gz artifacts/SHA256SUMS.txt \
             --verify-tag \
             --generate-notes \
-            --title "unifi-mcp ${{ github.ref_name }}"
+            --title "unifi-mcp ${{ github.ref_name }}" \
+            "${prerelease_flag[@]}"
